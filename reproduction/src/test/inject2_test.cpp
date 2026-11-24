@@ -86,156 +86,30 @@ static LONG WINAPI veh_stub(EXCEPTION_POINTERS* ep){
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-static DWORD prot_from_scn(DWORD s){
-    DWORD p=PAGE_READONLY;
-    if (s&0x20000000) p=PAGE_EXECUTE_READ;
-    if (s&0x40000000) p=PAGE_EXECUTE_READWRITE;
-    if (s&0x80000000){ if (s&0x20000000) p=PAGE_EXECUTE_READWRITE; else p=PAGE_READWRITE; }
-    return p;
-}
-
-/* map a PE image into the process at a desired base; resolve imports; rebase.
-   desired == 0 uses the image's preferred base. We deliberately map stage-1 at a
-   HIGH base (not its preferred 0x10000000) so that the reflectively-mapped stage-2
-   (which also wants 0x10000000) lands on its preferred base cleanly - exactly as in
-   the real delivery, where the outer host holds stage-1 and stage-2 claims 0x10000000. */
-static HMODULE map_pe(const uint8_t* img, size_t len, DWORD desired){
-    if (len < 0x40) return NULL;
-    DWORD el = *(DWORD*)(img+0x3C);
-    const IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(img+el);
-    if (nt->Signature != 0x00004550) return NULL;
-    const IMAGE_OPTIONAL_HEADER32* opt = &nt->OptionalHeader;
-    if (opt->Magic != 0x10b) return NULL;
-    DWORD image_size = opt->SizeOfImage, hdr = opt->SizeOfHeaders;
-    LPVOID base = VirtualAlloc((LPVOID)(ULONG_PTR)(desired? desired : opt->ImageBase), image_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
-    if (!base) base = VirtualAlloc(NULL, image_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
-    if (!base) return NULL;
-    HMODULE actual = (HMODULE)(ULONG_PTR)base;
-    memcpy(base, img, hdr);
-    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
-    for (WORD i=0;i<nt->FileHeader.NumberOfSections;++i,++sec)
-        if (sec->SizeOfRawData)
-            memcpy((LPBYTE)base+sec->VirtualAddress, img+sec->PointerToRawData, sec->SizeOfRawData);
-    /* imports */
-    if (opt->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress){
-        IMAGE_IMPORT_DESCRIPTOR* imp = (IMAGE_IMPORT_DESCRIPTOR*)((LPBYTE)base+opt->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
-        for (; imp->Name; ++imp){
-            HMODULE dll = LoadLibraryA((const CHAR*)((LPBYTE)base+imp->Name));
-            if (!dll){
-                char ib[96]; sprintf(ib,"IMPORT FAIL: %s (err %lu)\n",
-                    (const char*)((LPBYTE)base+imp->Name), GetLastError());
-                HANDLE ff=CreateFileA(VEH_PATH,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-                if(ff){DWORD w;WriteFile(ff,ib,(DWORD)strlen(ib),&w,NULL);CloseHandle(ff);}
-                return actual;
-            }
-            IMAGE_THUNK_DATA* ilt=(IMAGE_THUNK_DATA*)((LPBYTE)base+imp->FirstThunk);
-            IMAGE_THUNK_DATA* iat=(IMAGE_THUNK_DATA*)((LPBYTE)base+(imp->OriginalFirstThunk?imp->OriginalFirstThunk:imp->FirstThunk));
-            for (; iat->u1.AddressOfData; ++iat,++ilt){
-                if (iat->u1.Ordinal & IMAGE_ORDINAL_FLAG)
-                    ilt->u1.Function=(DWORD)(ULONG_PTR)GetProcAddress(dll,(LPCSTR)(iat->u1.Ordinal&0xFFFF));
-                else
-                    ilt->u1.Function=(DWORD)(ULONG_PTR)GetProcAddress(dll,((IMAGE_IMPORT_BY_NAME*)((LPBYTE)base+iat->u1.AddressOfData))->Name);
-            }
-        }
-    }
-    /* relocations (only if we did not get the preferred base) */
-    if ((DWORD_PTR)actual != (DWORD_PTR)(ULONG_PTR)opt->ImageBase &&
-        opt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress){
-        LONG delta=(LONG)((DWORD_PTR)actual-(DWORD_PTR)(ULONG_PTR)opt->ImageBase);
-        IMAGE_BASE_RELOCATION* rel=(IMAGE_BASE_RELOCATION*)((LPBYTE)base+opt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
-        for (; rel->VirtualAddress; rel=(IMAGE_BASE_RELOCATION*)((LPBYTE)rel+rel->SizeOfBlock)){
-            const WORD* e=(const WORD*)(rel+1); DWORD cnt=(rel->SizeOfBlock-sizeof(IMAGE_BASE_RELOCATION))/2;
-            for (DWORD i=0;i<cnt;i++) if ((e[i]>>12)==3) *(DWORD*)((LPBYTE)base+rel->VirtualAddress+(e[i]&0xFFF))+=delta;
-        }
-    }
-    /* section protections */
-    sec = IMAGE_FIRST_SECTION(nt);
-    for (WORD i=0;i<nt->FileHeader.NumberOfSections;++i,++sec)
-        if (sec->Misc.VirtualSize) VirtualProtect((LPBYTE)base+sec->VirtualAddress, sec->Misc.VirtualSize, prot_from_scn(sec->Characteristics), NULL);
-    return actual;
-}
-
 int main(int argc, char** argv){
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc<2){ fprintf(stderr,"usage: %s <stage1.dll>\n",argv[0]); return 2; }
     char path[MAX_PATH]; GetFullPathNameA(argv[1],MAX_PATH,path,NULL);
     char self[MAX_PATH]; GetModuleFileNameA(NULL, self, MAX_PATH);
 
-    /* ---------------- CHILD MODE: the clean host ---------------- */
+    /* ---------------- CHILD MODE: the clean host ----------------
+       Faithful delivery: in the original the wrapper (stage-1) is a *normal*
+       module in svchost (LoadLibrary'd), so it holds its preferred base
+       0x10000000 and its DllMain receives a real PEB-registered handle. Stage-1
+       then reflectively maps stage-2 (same preferred base) at a relocated high
+       address. We reproduce exactly that by LoadLibrary'ing stage-1 here (not a
+       hand map): the worm's GetModuleFileNameA(hinst) resolves the on-disk path
+       and g_path ends in ".dll", so the worm treats itself as a service DLL. */
     if (GetEnvironmentVariableA("KIDO_CHILD", NULL, 0) != NULL){
         AddVectoredExceptionHandler(1, veh_stub);
         FILE* mark = fopen(DONE_PATH,"w"); if (mark) fclose(mark);   /* signal the parent */
-        HANDLE hf = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hf==INVALID_HANDLE_VALUE){ return 3; }
-        DWORD fsz = GetFileSize(hf, NULL);
-        HANDLE hm = CreateFileMappingA(hf, NULL, PAGE_READONLY, 0, 0, NULL);
-        const uint8_t* view = (const uint8_t*)MapViewOfFile(hm, FILE_MAP_READ, 0, 0, 0);
-        uint8_t* img=(uint8_t*)malloc(fsz);
-        memcpy(img, view, fsz);
-        UnmapViewOfFile(view); CloseHandle(hm); CloseHandle(hf);
-        /* Map stage-1 at a HIGH base so its reflectively-loaded stage-2 (UPX,
-           non-relocatable stub, MUST be at 0x10000000) can claim that base cleanly.
-           In real delivery svchost holds stage-1 at an ASLR base and stage-2 owns
-           0x10000000. stage-1 itself is fully relocatable, so rebasing is exact. */
-        HMODULE base = map_pe(img, fsz, 0x50000000);
-        if (!base){ return 4; }
-        const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(img + *(DWORD*)(img+0x3C));
-        DWORD eprva = nt->OptionalHeader.AddressOfEntryPoint;
-        /* Also read the EP straight from the mapped image (belt & suspenders). */
-        const IMAGE_NT_HEADERS* nt2 = (const IMAGE_NT_HEADERS*)((LPBYTE)base + *(DWORD*)(img+0x3C));
-        DWORD eprva2 = nt2->OptionalHeader.AddressOfEntryPoint;
-        MEMORY_BASIC_INFORMATION mbi; ZeroMemory(&mbi,sizeof(mbi));
-        VirtualQuery((LPVOID)((LPBYTE)base+eprva), &mbi, sizeof(mbi));
-        BYTE* e = (BYTE*)((LPBYTE)base+eprva);
-        HANDLE lf = CreateFileA(VEH_PATH, FILE_APPEND_DATA, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (lf!=INVALID_HANDLE_VALUE){
-            char db[220];
-            sprintf(db,"DIAG elfanew=0x%x eprva=0x%x eprva2=0x%x base=0x%p ep_addr=0x%p prot=0x%x state=0x%x\n",
-                *(DWORD*)(img+0x3C), eprva, eprva2, base, (void*)(base+eprva), mbi.Protect, mbi.State);
-            DWORD w; WriteFile(lf,db,(DWORD)strlen(db),&w,NULL);
-            char db2[64]; sprintf(db2,"  epbytes(mapped): %02x %02x %02x %02x %02x %02x\n", e[0],e[1],e[2],e[3],e[4],e[5]);
-            WriteFile(lf,db2,(DWORD)strlen(db2),&w,NULL);
-            /* EP bytes straight from the file buffer (ground truth) */
-            char db3[96]; sprintf(db3,"  epbytes(file  img+0x%x): %02x %02x %02x %02x %02x %02x\n",
-                eprva, img[eprva],img[eprva+1],img[eprva+2],img[eprva+3],img[eprva+4],img[eprva+5]);
-            WriteFile(lf,db3,(DWORD)strlen(db3),&w,NULL); CloseHandle(lf);
+        HMODULE s1 = LoadLibraryA(path);
+        if (!s1){
+            char ib[96]; sprintf(ib,"LOADLIB1 FAIL err=%lu\n",GetLastError());
+            HANDLE ff=CreateFileA(VEH_PATH,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+            if(ff){DWORD w;WriteFile(ff,ib,(DWORD)strlen(ib),&w,NULL);CloseHandle(ff);}
+            return 4;
         }
-        /* force correct protection on EVERY section (map_pe may have returned early
-           before its protection loop if an import's LoadLibraryA failed; the EP is in
-           .text, so it MUST be executable or instruction-fetch faults). */
-        {
-            const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
-            for (WORD i=0;i<nt->FileHeader.NumberOfSections;++i,++sec){
-                if (!sec->Misc.VirtualSize) continue;
-                DWORD oldp;
-                BOOL ok = VirtualProtect((LPBYTE)base+sec->VirtualAddress, sec->Misc.VirtualSize,
-                                         prot_from_scn(sec->Characteristics), &oldp);
-                char pb[96];
-                sprintf(pb,"  VP %s VA 0x%06x size 0x%x -> 0x%x ok=%d old=0x%x\n",
-                        (char*)sec->Name, sec->VirtualAddress, sec->Misc.VirtualSize,
-                        prot_from_scn(sec->Characteristics), ok, oldp);
-                HANDLE pf=CreateFileA(VEH_PATH,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-                if(pf){DWORD w;WriteFile(pf,pb,(DWORD)strlen(pb),&w,NULL);CloseHandle(pf);}
-            }
-            /* re-query the EP page after forcing */
-            MEMORY_BASIC_INFORMATION m2; VirtualQuery((LPVOID)((LPBYTE)base+eprva),&m2,sizeof(m2));
-            char qb[96]; sprintf(qb,"  post-VP EP page protect=0x%x state=0x%x\n", m2.Protect, m2.State);
-            HANDLE qf=CreateFileA(VEH_PATH,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-            if(qf){DWORD w;WriteFile(qf,qb,(DWORD)strlen(qb),&w,NULL);CloseHandle(qf);}
-        }
-        /* dump mapped .text start (0x1000) and the real EP (0xa48) to confirm the copy */
-        {
-            HANDLE lf=CreateFileA(VEH_PATH,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-            if(lf){
-                char b[160];
-                sprintf(b,"  mapped text@0x1000: %02x %02x %02x %02x  mapped EP@0xa48: %02x %02x %02x %02x\n",
-                    ((BYTE*)base)[0x1000],((BYTE*)base)[0x1001],((BYTE*)base)[0x1002],((BYTE*)base)[0x1003],
-                    ((BYTE*)base)[0x1a48],((BYTE*)base)[0x1a49],((BYTE*)base)[0x1a4a],((BYTE*)base)[0x1a4b]);
-                DWORD w; WriteFile(lf,b,(DWORD)strlen(b),&w,NULL); CloseHandle(lf);
-            }
-        }
-        typedef void(WINAPI* EPFn)(HINSTANCE, DWORD, LPVOID);
-        ((EPFn)((LPBYTE)base + eprva))((HINSTANCE)base, 1, NULL);   /* runs the whole chain */
         for (;;){ Sleep(1000); }   /* keep the process alive so the worm thread runs */
         return 0;
     }

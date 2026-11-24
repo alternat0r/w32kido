@@ -19,20 +19,23 @@ static void kido_trace(const char* step)
 }
 
 /* One-shot crash logger + minidump for any exception in the worm's threads.
-   Returns EXCEPTION_CONTINUE_SEARCH (never swallows the fault). */
+   Catches the access violation AND heap corruption (0xC0000374). Returns
+   EXCEPTION_CONTINUE_SEARCH (never swallows the fault). */
 #include <dbghelp.h>
+static volatile LONG once_veh = 0;
 static LONG WINAPI kido_worm_veh(EXCEPTION_POINTERS* ep)
 {
-    static volatile LONG once = 0;
-    if (ep->ExceptionRecord->ExceptionCode == 0xC0000005 &&
-        InterlockedCompareExchange(&once, 1, 0) == 0){
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if ((code == 0xC0000005 || code == 0xC0000374) &&
+        InterlockedCompareExchange(&once_veh, 1, 0) == 0){
         HANDLE f = CreateFileA("C:\\rework\\kido_repro\\worm_crash.txt", FILE_APPEND_DATA,
             FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (f != INVALID_HANDLE_VALUE){
-            char b[256];
-            int n = sprintf(b, "WORM FAULT 0x%08lx rip=0x%08lx esp=0x%08lx access=%lu addr=0x%08lx\n",
-                ep->ExceptionRecord->ExceptionCode, ep->ContextRecord->Eip,
-                ep->ContextRecord->Esp, ep->ExceptionRecord->ExceptionInformation[0],
+            char b[320];
+            int n = sprintf(b, "WORM FAULT 0x%08lx rip=0x%08x esp=0x%08x thread=%lu "
+                "access=%lu addr=0x%08lx\n",
+                code, ep->ContextRecord->Eip, ep->ContextRecord->Esp,
+                GetCurrentThreadId(), ep->ExceptionRecord->ExceptionInformation[0],
                 ep->ExceptionRecord->ExceptionInformation[1]);
             DWORD w; WriteFile(f, b, n, &w, NULL);
             CloseHandle(f);
