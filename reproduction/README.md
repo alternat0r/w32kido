@@ -115,18 +115,39 @@ Two original PE identities are reproduced exactly: stage-1 `ImageBase
 `0x39DF5AFB`, stage 2/worm `0x3F73A4C6`).
 
 ## Verifying on the analysis VM
-Copy the `build/` artifacts to the VM and run:
+Copy the `build/` artifacts to the VM (working dir `C:\rework\kido_repro`) and run:
 ```
-test_crypto.exe                 :: crypto self-test (no network, no side effects)
-decode_test.exe                 :: decodes the embedded stage-2; compare md5
-worm_load.exe kido_worm.dll     :: system-loader path: DllMain → main thread →
-                                   HTTP server on a random port 1024-9999;
-                                   the driver issues a real GET to confirm the
-                                   worm serves its own image
-inject2_test.exe kido_stage1.dll:: full 3-layer reflective chain in a clean
-                                   child process (maps stage-1 high, stage-2
-                                   claims 0x10000000, calls the entry points)
+test_crypto.exe                  :: crypto self-test (10/10 PASS; no network, no side effects)
+decode_test.exe                  :: decodes the embedded stage-2; bit-exact vs the
+                                    on-disk packed stage-2 (only the erased MZ/PE
+                                    signatures differ)
+worm_load.exe kido_worm.dll      :: system-loader path: DllMain -> main thread ->
+                                    HTTP server on a random port 1024-9999
+inject2_test.exe kido_stage1.dll :: full 3-layer reflective chain in a clean child
+                                    process: LoadLibrary stage-1 (holds 0x10000000,
+                                    as svchost does) -> stage-1 decodes + reflectively
+                                    maps stage-2 (relocated, sections RWX) -> UPX stub
+                                    unpacks -> worm DllMain -> main thread -> WSAStartup
+                                    -> HTTP server BIND
+kido_get.exe <port>              :: HTTP GET client; fetches the worm's served image
 ```
+
+### Confirmed on the analysis VM (Windows 10, 32-bit path)
+* `test_crypto.exe` — 10/10 PASS (SHA-1, RC4 RFC6229, CRC-32, RSA-1024 bignum,
+  payload-signature gate accept/decrypt/reject).
+* `decode_test.exe` — decoded stage-2 is bit-exact with the on-disk packed blob.
+* Full 3-layer chain — no instruction-fetch fault in the UPX stub; all stage-2
+  sections mapped executable; the worm's own DllMain runs (single-instance mutex
+  `Global\<CRC32(computer name)>-7` created, `first=1`), the main thread starts
+  (seed PRNG -> hot-patch -> read own image -> WSAStartup -> **BIND OK port 5523**),
+  and `kido_get.exe` / `curl` against `http://127.0.0.1:5523/` receive
+  `HTTP/1.0 200 OK` / `Content-Type: image/jpeg` / the 52,736-byte wrapper image
+  (MD5 of the served body == MD5 of `kido_stage1.dll` on disk) — i.e. the worm
+  serves its own image so a compromised peer re-runs stage1 -> stage2 -> stage3.
+
+The worm's HTTP server binds a random port in 1024..9999 (seeded from the
+volume serial), matching the original (`1024 + rand() % 0x2310`). On the VM the
+port was 5523.
 
 ### Notes on modern-OS behaviour
 The worm targets Windows 2000 / XP / 2003. Two things are handled for modern
