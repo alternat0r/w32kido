@@ -1,0 +1,292 @@
+====================================================================================================
+kido.sample - stage 3 (worm) string inventory
+====================================================================================================
+Source  : stage-3 image rebuilt statically from kido.sample (decode -> UPX NRV2B -> unfilter -> relocs). Nothing executed.
+Offsets : RVA (preferred base 0x10000000; VA = 0x10000000 + RVA). Image RVA 0x1000..0x19000.
+xref    : functions (sub_RVA) whose code uses the string address directly (decoded instruction operand).
+ptr@    : RVAs where an absolute pointer to the string is stored (a code operand or a pointer table).
+noise   : 761 string-like byte runs overlapping decoded instructions were dropped as code bytes;
+          284 further binary-looking runs (table/data bytes that merely resemble text) were suppressed.
+Scope   : text strings only. Binary data blocks (protocol templates, tables) are not decoded or reproduced here.
+
+string candidates (>=4 chars, ASCII + UTF-16LE): 156
+   FILE/PROCESS/MODULE                           7
+   FORMAT/NAMING                                12
+   OTHER (referenced)                            8
+   NET/URL                                      10
+   SMB/RPC/OS-FINGERPRINT                       21
+   REGISTRY/SERVICE                             17
+   NET/DGA-TLD                                   5
+   NET/DATE-LOOKUP-SITE                          6
+   HTTP/UPNP                                    41
+   LIB/ZLIB                                     28
+   UNREFERENCED (likely data/code bytes)         1
+
+----------------------------------------------------------------------------------------------------
+[NET/URL]  (10)
+----------------------------------------------------------------------------------------------------
+0138C ASCII  http://www.getmyip.org  ptr@: 15018
+013A4 ASCII  http://getmyip.co.uk  ptr@: 15014
+013BC ASCII  http://checkip.dyndns.org  ptr@: 15010
+014BC ASCII  http://%d.%d.%d.%d:%d/%s  xref: sub_07364,sub_0C384  ptr@: 0738F,0C3C0
+01924 ASCII  http://www.%s  xref: sub_0961F  ptr@: 0964C
+0195C ASCII  http://trafficconverter.biz/4vir/antispyware/loadadv.exe  xref: sub_0986A  ptr@: 098BB
+01998 ASCII  http://trafficconverter.biz  xref: sub_0986A  ptr@: 098AC
+03E3C ASCII  http://www.maxmind.com/download/geoip/database/GeoIP.dat.gz  ptr@: 0C6D0
+06498 ASCII  <?xml version="1.0"?>\r\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">< ...[+26 chars]  xref: sub_1234F  ptr@: 123AE
+06548 ASCII  <?xml version="1.0"?>\r\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">< ...[+59 chars]  xref: sub_1234F  ptr@: 12395
+
+----------------------------------------------------------------------------------------------------
+[NET/DATE-LOOKUP-SITE]  (6)
+----------------------------------------------------------------------------------------------------
+018E0 ASCII  w3.org  ptr@: 15374
+018E8 ASCII  ask.com  ptr@: 15370
+018F0 ASCII  msn.com  ptr@: 1536C
+018F8 ASCII  yahoo.com  ptr@: 15368
+01904 ASCII  google.com  ptr@: 15364
+01910 ASCII  baidu.com  ptr@: 15360
+
+----------------------------------------------------------------------------------------------------
+[NET/DGA-TLD]  (5)
+----------------------------------------------------------------------------------------------------
+01888 ASCII  .biz  ptr@: 153B8
+01890 ASCII  .info  ptr@: 153B4
+01898 ASCII  .org  ptr@: 153B0
+018A0 ASCII  .net  ptr@: 153AC
+018A8 ASCII  .com  ptr@: 153A8
+
+----------------------------------------------------------------------------------------------------
+[SMB/RPC/OS-FINGERPRINT]  (21)
+----------------------------------------------------------------------------------------------------
+014D8 ASCII  \\%s\IPC$  xref: sub_07454,sub_078CC  ptr@: 07467,07970
+01500 ASCII  ncacn_np  xref: sub_074B7,sub_0754B  ptr@: 074D7,0756E
+0151C ASCII  \pipe\srvsvc  xref: sub_078CC  ptr@: 07944
+0154C ASCII  \pipe\browser  xref: sub_07607  ptr@: 07864
+015BC ASCII  NetpwPathCanonicalize  xref: sub_07B0B  ptr@: 07B1F
+015D4 ASCII  netapi32.dll  xref: sub_07B0B  ptr@: 07B0D
+019C3 ASCII  D CKFDENECFDEFFCFGEFFCCACACACACACA
+019E6 ASCII   CACACACACACACACACACACACACACACAAA
+01A11 ASCII  SMBr
+01A34 ASCII  NT LM 0.12
+01A45 ASCII  SMBs
+01A86 ASCII  LANMAN
+01A90 ASCII  unix  xref: sub_0BADB  ptr@: 0BD2B
+01A98 ASCII  windows 4.0  xref: sub_0BADB  ptr@: 0BD18
+01AA4 ASCII  windows 5.0  xref: sub_0BADB  ptr@: 0BD06
+01AB0 ASCII  windows 5.1  xref: sub_0BADB  ptr@: 0BCF4
+01ABC ASCII  service pack 2  xref: sub_0BADB  ptr@: 0BCCA
+01ACC ASCII  windows server 2003  xref: sub_0BADB  ptr@: 0BCAA
+01AE0 ASCII  service pack  xref: sub_0BADB  ptr@: 0BC8F,0BCDC
+01AF0 ASCII  service pack 1  xref: sub_0BADB  ptr@: 0BC7A,0BCB8
+01B00 ASCII  vista  xref: sub_0BADB  ptr@: 0BC66
+
+----------------------------------------------------------------------------------------------------
+[HTTP/UPNP]  (41)
+----------------------------------------------------------------------------------------------------
+01B18 ASCII  HTTP/1.0 200 OK\r\nPragma: no-cache\r\nContent-Length: %u\r\nContent-Type: image/jpeg\r\n\r\n  ptr@: 0BF8F
+01B80 ASCII  \r\nuser-agent:  ptr@: 0BEEA
+01B98 ASCII  get /%s http/  ptr@: 0BDF4
+061C0 ASCII  GET %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: Close\r\n\r\n  xref: sub_115F5  ptr@: 116C7
+061F8 ASCII  service  ptr@: 11C46,11C8F
+06200 ASCII  urn:schemas-upnp-org:service:WANPPPConnection:1  ptr@: 0640C,11D1B
+06230 ASCII  urn:schemas-upnp-org:service:WANIPConnection:1  ptr@: 06408,11D0A
+06260 ASCII  urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1  xref: sub_12260  ptr@: 11CB0,122D8
+06298 ASCII  SCPDURL  ptr@: 11DEB
+062A0 ASCII  eventSubURL  ptr@: 11DD2
+062AC ASCII  controlURL  ptr@: 11DB9
+062B8 ASCII  serviceType  ptr@: 11DA0
+062C4 ASCII  URLBase  ptr@: 11D87
+062D0 ASCII  POST %s HTTP/1.1\r\nHost: %s%s\r\nUser-Agent: POSIX, UPnP/1.0\r\nContent-Length: %d\r\nContent-Type: text/xml\r\nSOAPAction: "%s"\r\nConnection: Close ...[+55 chars]  xref: sub_11E2A  ptr@: 11E7C
+06398 ASCII  content-length  xref: sub_11F1B  ptr@: 11F21
+063A8 ASCII  M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nST: %s\r\nMAN: "ssdp:discover"\r\nMX: 3\r\n\r\n  xref: sub_125D9  ptr@: 126DD
+06418 ASCII  upnp:rootdevice  ptr@: 06410
+06428 ASCII  urn:schemas-upnp-org:device:InternetGatewayDevice:1  ptr@: 06404
+06460 ASCII  location  xref: sub_11F83  ptr@: 11FCB
+0646C ASCII  Connected  xref: sub_12221  ptr@: 1224D
+06620 ASCII  239.255.255.250  xref: sub_125D9  ptr@: 12659
+06630 ASCII  errorCode  xref: sub_12909,sub_12A48,sub_12B1F,sub_12C56,sub_12D2B,sub_12F2C  ptr@: 12A0F,12AE2,12C09
+0663C ASCII  NewLastConnectionError  xref: sub_12909  ptr@: 12990
+06654 ASCII  NewConnectionStatus  xref: sub_12909  ptr@: 1297F
+06668 ASCII  NewUptime  xref: sub_12909  ptr@: 1296E
+06674 ASCII  GetStatusInfo  xref: sub_12909  ptr@: 12946
+06684 ASCII  NewExternalIPAddress  xref: sub_12A48  ptr@: 12AB6
+0669C ASCII  GetExternalIPAddress  xref: sub_12A48  ptr@: 12A8E
+066B4 ASCII  NewLeaseDuration  xref: sub_12B1F,sub_12D2B  ptr@: 12BDD,12EC2
+066C8 ASCII  AddPortMapping  xref: sub_12B1F  ptr@: 12BD3
+066D8 ASCII  NewPortMappingDescription  xref: sub_12B1F,sub_12D2B  ptr@: 12BB8,12E9B
+066F8 ASCII  NewEnabled  xref: sub_12B1F,sub_12D2B  ptr@: 12BAA,12E74
+06704 ASCII  NewInternalClient  xref: sub_12B1F,sub_12D2B,sub_12F2C  ptr@: 12BA3,12E2B,12FCC
+06718 ASCII  NewInternalPort  xref: sub_12B1F,sub_12D2B,sub_12F2C  ptr@: 12B9C,12E51,13003
+06728 ASCII  NewProtocol  xref: sub_12B1F,sub_12C56,sub_12D2B,sub_12F2C  ptr@: 12B92,12CBB,12E04
+06734 ASCII  NewExternalPort  xref: sub_12B1F,sub_12C56,sub_12D2B,sub_12F2C  ptr@: 12B88,12CAF,12DDA
+06744 ASCII  NewRemoteHost  xref: sub_12B1F,sub_12C56,sub_12D2B,sub_12F2C  ptr@: 12B81,12CA5,12DAC
+06754 ASCII  DeletePortMapping  xref: sub_12C56  ptr@: 12C9C
+06768 ASCII  NewPortMappingIndex  xref: sub_12D2B  ptr@: 12D87
+0677C ASCII  GetGenericPortMappingEntry  xref: sub_12D2B  ptr@: 12D78
+06798 ASCII  GetSpecificPortMappingEntry  xref: sub_12F2C  ptr@: 12F8A
+
+----------------------------------------------------------------------------------------------------
+[REGISTRY/SERVICE]  (17)
+----------------------------------------------------------------------------------------------------
+01614 ASCII  SOFTWARE\Microsoft\Windows\CurrentVersion\Nls  xref: sub_07CD4,sub_07D25  ptr@: 07CE6,07D39
+01644 ASCII  SharedAccess  xref: sub_07F99  ptr@: 07FBB
+01684 ASCII  ResetSR  xref: sub_08F2C  ptr@: 08F4F
+0168C ASCII  srclient.dll  xref: sub_08F2C  ptr@: 08F39
+016B0 UTF16  SOFTWARE\Microsoft\Windows NT\CurrentVersion\SvcHost  xref: sub_08F81  ptr@: 08F91
+0171C UTF16  ServiceDll  xref: sub_09099  ptr@: 09238
+01734 UTF16  Parameters  xref: sub_09099  ptr@: 09215
+0174C UTF16  ObjectName  xref: sub_09099  ptr@: 091FD
+01764 UTF16  LocalSystem  xref: sub_09099  ptr@: 091F5
+0177C UTF16  ImagePath  xref: sub_09099  ptr@: 091E9
+01790 UTF16  ErrorControl  xref: sub_09099  ptr@: 091CB
+017AC UTF16  Start  xref: sub_09099  ptr@: 091B1
+017B8 UTF16  Type  xref: sub_09099  ptr@: 09197
+017C4 UTF16  DisplayName  xref: sub_09099  ptr@: 09184
+017E0 UTF16  SYSTEM\CurrentControlSet\Services\  xref: sub_09099  ptr@: 090FA
+01828 UTF16  %SystemRoot%\system32\svchost.exe -k   xref: sub_09099  ptr@: 090B6
+01878 UTF16  netsvcs  xref: sub_0927B  ptr@: 092E0
+
+----------------------------------------------------------------------------------------------------
+[FORMAT/NAMING]  (12)
+----------------------------------------------------------------------------------------------------
+012E4 ASCII  Global\%u-%u  xref: sub_06A3A  ptr@: 06AB7
+0133C ASCII  %08x%08x  xref: sub_06DB9  ptr@: 06E30
+01578 ASCII  \\%d.%d.%d.%d  xref: sub_07607  ptr@: 07629
+01588 ASCII  %d.%d.%d.%d  xref: sub_078CC,sub_0C747  ptr@: 078F9,0C794
+01654 ASCII  n%08x%08x%08x  xref: sub_088D6  ptr@: 0896F
+01664 ASCII  w%08x%08x%08x  xref: sub_08A08  ptr@: 08D0D,08EB0
+01674 ASCII  l%08x%08x%08x  xref: sub_08A08  ptr@: 08A99,08E30
+0193F ASCII  ?http://%s/search?q=%d&aq=%d
+03E94 ASCII  %s\%s  xref: sub_0C843  ptr@: 0C91D
+04CF0 ASCII  %c%c%c%c%c%c%c%c%c%c  xref: sub_0F64C  ptr@: 0F7C0
+0638C ASCII  :%hu  xref: sub_11E2A  ptr@: 11E58
+06618 ASCII  %s#%s  xref: sub_1234F  ptr@: 12373
+
+----------------------------------------------------------------------------------------------------
+[FILE/PROCESS/MODULE]  (7)
+----------------------------------------------------------------------------------------------------
+012D8 ASCII  .dll  xref: sub_06810,sub_06847  ptr@: 06823,068D2
+014B1 ASCII  urlmon
+015E4 ASCII  kernel32.dll  xref: sub_07B75,sub_08054  ptr@: 07BC0,0806D
+015F4 ASCII  LoadLibraryA  xref: sub_07B75  ptr@: 07BBB
+01604 ASCII  services.exe  xref: sub_07CA0  ptr@: 07CA4
+03E04 ASCII  \VarFileInfo\Translation  xref: sub_0C5AF  ptr@: 0C645
+03E20 ASCII  ntdll.dll  xref: sub_0C5AF  ptr@: 0C5ED
+
+----------------------------------------------------------------------------------------------------
+[LIB/ZLIB]  (28)
+----------------------------------------------------------------------------------------------------
+041AC ASCII  1.2.3  xref: sub_0F64C  ptr@: 0F756
+041C8 ASCII   deflate 1.2.3 Copyright 1995-2005 Jean-loup Gailly 
+04278 ASCII  1.2.3
+04B28 ASCII  incorrect length check  xref: sub_0E1BD  ptr@: 0F1F3
+04B40 ASCII  incorrect data check  xref: sub_0E1BD  ptr@: 0F1A0
+04B58 ASCII  invalid distance too far back  xref: sub_0E1BD,sub_0FA38  ptr@: 0F03F,0FD6C
+04B78 ASCII  invalid distance code  xref: sub_0E1BD,sub_0FA38  ptr@: 0EFCC,0FD75
+04B90 ASCII  invalid literal/length code  xref: sub_0E1BD,sub_0FA38  ptr@: 0EE90,0FD8B
+04BAC ASCII  invalid distances set  xref: sub_0E1BD  ptr@: 0ED18
+04BC4 ASCII  invalid literal/lengths set  xref: sub_0E1BD  ptr@: 0ECD3
+04BE0 ASCII  invalid bit length repeat  xref: sub_0E1BD  ptr@: 0EC73,0EC82
+04BFC ASCII  invalid code lengths set  xref: sub_0E1BD  ptr@: 0EAB6
+04C18 ASCII  too many length or distance symbols  xref: sub_0E1BD  ptr@: 0EA05
+04C3C ASCII  invalid stored block lengths  xref: sub_0E1BD  ptr@: 0E921
+04C5C ASCII  invalid block type  xref: sub_0E1BD  ptr@: 0E88C
+04C70 ASCII  header crc mismatch  xref: sub_0E1BD  ptr@: 0E74F
+04C84 ASCII  unknown header flags set  xref: sub_0E1BD  ptr@: 0E3A5
+04CA0 ASCII  unknown compression method  xref: sub_0E1BD  ptr@: 0E391
+04CBC ASCII  incorrect header check  xref: sub_0E1BD  ptr@: 0E353
+04CD4 ASCII  invalid window size  xref: sub_0E1BD  ptr@: 0E30F
+055B0 ASCII   inflate 1.2.3 Copyright 1995-2005 Mark Adler 
+06140 ASCII  incompatible version  ptr@: 06138
+06158 ASCII  buffer error  ptr@: 06134
+06168 ASCII  insufficient memory  ptr@: 06130
+0617C ASCII  data error  ptr@: 0612C
+06188 ASCII  stream error  ptr@: 06128
+061A4 ASCII  stream end  ptr@: 0611C
+061B0 ASCII  need dictionary  ptr@: 06118
+
+----------------------------------------------------------------------------------------------------
+[OTHER (referenced)]  (8)
+----------------------------------------------------------------------------------------------------
+01334 UTF16  WWW  xref: sub_06D4E  ptr@: 06D83
+01354 ASCII  TCP  xref: sub_06EE2,sub_07077  ptr@: 06F89,07108
+013D8 ASCII  ip address  xref: sub_071BA  ptr@: 0720B
+01568 UTF16  \..\..\  xref: sub_07607  ptr@: 07715
+015A4 UTF16  \..\  ptr@: 07AAF
+01B6C ASCII  windows nt 5.  ptr@: 0BF14
+06198 ASCII  file error  ptr@: 06124
+06478 ASCII  ></s:Body></s:Envelope>\r\n  xref: sub_1234F  ptr@: 12452
+
+----------------------------------------------------------------------------------------------------
+[UNREFERENCED (likely data/code bytes)]  (1)
+----------------------------------------------------------------------------------------------------
+05600 UTF16  #+3;CScs
+
+----------------------------------------------------------------------------------------------------
+[IMPORTED API NAMES]  (169, from the recovered import table; IAT slot RVA in brackets)
+----------------------------------------------------------------------------------------------------
+KERNEL32.DLL (60)
+   WriteFile[1034], WaitForMultipleObjects[1038], TerminateThread[103C], GetSystemTime[1040]
+   SystemTimeToFileTime[1044], GetTempFileNameA[1048], GetTempPathA[104C], WinExec[1050]
+   MultiByteToWideChar[1054], FreeLibrary[1058], OpenEventA[105C], SetEvent[1060]
+   InterlockedExchange[1064], CreateEventA[1068], InterlockedIncrement[106C]
+   InterlockedDecrement[1070], WaitForSingleObject[1074], DeleteFileA[1078], ReadFile[107C]
+   HeapFree[1080], GetProcessHeap[1084], HeapAlloc[1088], GetFileTime[108C], SetFileTime[1090]
+   GetCurrentThreadId[1094], GetCurrentProcessId[1098], QueryPerformanceCounter[109C]
+   GetTickCount[10A0], GetVolumeInformationA[10A4], CreateToolhelp32Snapshot[10A8]
+   Process32First[10AC], Process32Next[10B0], OpenProcess[10B4], VirtualAllocEx[10B8]
+   GlobalFree[10BC], GlobalAlloc[10C0], Sleep[10C4], LockFile[10C8], GetFileSize[10CC]
+   CreateFileA[10D0], MoveFileExA[10D4], CopyFileA[10D8], MoveFileA[10DC]
+   GetSystemDirectoryA[10E0], GetVersion[10E4], CloseHandle[10E8], CreateThread[10EC]
+   GetLastError[10F0], CreateMutexA[10F4], GetComputerNameA[10F8], GetModuleFileNameA[10FC]
+   DisableThreadLibraryCalls[1100], VirtualProtect[1104], VirtualFree[1108], VirtualAlloc[110C]
+   GetProcAddress[1110], LoadLibraryA[1114], CreateRemoteThread[1118], WriteProcessMemory[111C]
+   GetModuleHandleA[1120]
+ADVAPI32.dll (12)
+   CloseServiceHandle[1000], RegCreateKeyExW[1004], RegOpenKeyExW[1008], RegQueryValueExW[100C]
+   RegSetValueExW[1010], OpenSCManagerA[1014], OpenServiceA[1018], RegCloseKey[101C]
+   ControlService[1020], RegQueryValueExA[1024], RegOpenKeyExA[1028], RegSetValueExA[102C]
+MPR.dll (2)
+   WNetAddConnection2A[1128], WNetCancelConnection2A[112C]
+MSVCRT.dll (47)
+   _adjust_fdiv[1134], _initterm[1138], calloc[113C], sscanf[1140], strchr[1144], realloc[1148]
+   _fdopen[114C], fprintf[1150], ftell[1154], strcpy[1158], _stricmp[115C], _errno[1160]
+   fseek[1164], fread[1168], strcmp[116C], fopen[1170], fclose[1174], fwrite[1178], memcmp[117C]
+   strcat[1180], sin[1184], log[1188], strtok[118C], atoi[1190], _strnicmp[1194], wcscpy[1198]
+   wcscat[119C], _fileno[11A0], _fstat[11A4], srand[11A8], wcsstr[11AC], wcslen[11B0]
+   memset[11B4], memcpy[11B8], malloc[11BC], _strlwr[11C0], strstr[11C4], _except_handler3[11C8]
+   _strdup[11CC], free[11D0], _snprintf[11D4], rand[11D8], strncat[11DC], strncpy[11E0]
+   strlen[11E4], abs[11E8], _memicmp[11EC]
+ole32.dll (3)
+   CoUninitialize[12B8], CoCreateInstance[12BC], CoInitializeEx[12C0]
+OLEAUT32.dll (3)
+   SysAllocString[11F4], SysStringLen[11F8], SysFreeString[11FC]
+RPCRT4.dll (4)
+   NdrClientCall2[1204], RpcStringBindingComposeA[1208], RpcBindingFromStringBindingA[120C]
+   RpcBindingFree[1210]
+urlmon.dll (2)
+   ObtainUserAgentString[12C8], URLDownloadToFileA[12CC]
+USER32.dll (1)
+   GetKeyboardLayoutList[1218]
+VERSION.dll (3)
+   VerQueryValueA[1220], GetFileVersionInfoA[1224], GetFileVersionInfoSizeA[1228]
+WININET.dll (6)
+   InternetOpenA[1230], HttpQueryInfoA[1234], InternetReadFile[1238], InternetCloseHandle[123C]
+   InternetGetConnectedState[1240], InternetOpenUrlA[1244]
+WS2_32.dll (26)
+   select[124C], __WSAFDIsSet[1250], ioctlsocket[1254], recv[1258], setsockopt[125C]
+   sendto[1260], listen[1264], accept[1268], bind[126C], send[1270], getsockname[1274]
+   shutdown[1278], gethostbyname[127C], htonl[1280], closesocket[1284], inet_ntoa[1288]
+   gethostname[128C], WSAStartup[1290], htons[1294], connect[1298], WSAGetLastError[129C]
+   WSASetLastError[12A0], ntohl[12A4], WSAIoctl[12A8], socket[12AC], inet_addr[12B0]
+
+----------------------------------------------------------------------------------------------------
+[STACK-BUILT STRINGS]  static pattern search (runs of mov [ebp+x], imm that spell text)
+----------------------------------------------------------------------------------------------------
+none found
+
+----------------------------------------------------------------------------------------------------
+[SINGLE-BYTE-XOR HIDDEN TEXT]  brute force over the data section and table area
+----------------------------------------------------------------------------------------------------
+none found
+

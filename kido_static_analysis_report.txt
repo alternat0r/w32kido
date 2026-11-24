@@ -1,0 +1,1243 @@
+================================================================================================
+STATIC ANALYSIS REPORT - kido.sample
+================================================================================================
+Report date   : 2026-11-21
+Analysis type : STATIC ONLY - the sample was never executed or detonated (capa and DiE only
+                parse files; FLOSS's code-emulation stage was deliberately not used)
+Sample        : E:\projects\analysis\2026-w32kido\kido.sample   (86,431 bytes)
+SHA-256       : d7d501e0aaeef3b9ed324d423b0309831f42dd8ab10e28a01f1238bddb5155d1
+Verdict       : MALICIOUS. Multi-layer wrapper around a Conficker (a.k.a. Kido / Downadup) worm
+                DLL. Closest public match: Conficker variant A.
+Confidence    : HIGH   - malicious; 3-layer structure; packing/encoding details (checksum-verified);
+                         stage-3 behaviours tagged CODE in section 9.2 (read in the disassembly,
+                         many also matched independently by capa)
+                MEDIUM - variant attribution; propagation / rendezvous / UPnP (function level)
+
+UPDATE (same day, after the first pass): stage 3 was subsequently rebuilt (UPX call-filter undone,
+imports and relocations applied exactly as the stub does) and disassembled at function level.
+Several items below that are marked "indicated" are now code-verified: the Ukrainian keyboard-layout
+check, the mutex Global\<CRC32(computer name)>-7, svchost "netsvcs" service registration, the System
+Restore reset, the in-memory hot-patch of NetpwPathCanonicalize, and the 30-minute / 3-hour timers.
+A second pass added: the payload-signature gate (RSA-1024 with e = 50001, SHA-1, RC4: section
+11.5), the use of the ntdll.dll language id (a per-target OS-language estimate that also implements
+the GeoIP "UA" exclusion), stage-1 base relocation (6.9), and a full set of tests on the 7,424-byte
+block (6.7).
+A third pass used the tools the user provided on the analysis VM (C:\Tools): capa 9.2.1 and Detect
+It Easy 3.10 were run on the sample and on the rebuilt stage 3 written out as a standalone PE
+(sections 6.5 and 9.1). capa finds nothing in the obfuscated file but matches 70 rules in stage 3,
+all of which were reconciled with the disassembly; section 9 and the ATT&CK mapping (section 10)
+were rewritten on that basis. The VM was used for static tools only; the sample was not executed
+there or anywhere else.
+See kido_program_flow_pseudocode.txt and kido_worm_strings.txt. kido.zip was skipped, as requested.
+
+CONTENTS
+  1   Executive summary
+  2   Is it packed, obfuscated or encrypted?  (direct answer)
+  3   Scope, method, tooling, evidence legend
+  4   File identification and hashes
+  5   Layer map
+  6   Stage 1 - the file itself (obfuscated reflective loader)
+  7   Stage 2 - embedded UPX-packed DLL
+  8   Stage 3 - unpacked payload (Conficker worm)
+  9   Capability review (capa results + manual review)
+  10  MITRE ATT&CK mapping
+  11  Indicators of compromise
+  12  Detection opportunities
+  13  YARA rules (validated)
+  14  Confidence, limitations, static follow-ups
+  15  References
+  A   Appendix A - decode / unpack recipe
+  B   Appendix B - recovered stage-3 import list
+
+
+================================================================================================
+1. EXECUTIVE SUMMARY
+================================================================================================
+* kido.sample is a 32-bit Windows DLL (PE32, i386, GUI subsystem), 86,431 bytes: an 86,016-byte
+  PE image plus a 415-byte HTML trailer. No exports, no resources, 42 imports.
+
+* It is a WRAPPER, not the worm itself. Three nested layers were recovered statically:
+
+    Stage 1  The file. An obfuscated reflective loader ("crypter"). Its .data section (57 KB,
+             entropy 7.48) holds a 42,496-byte encoded DLL. The code decodes it, maps it into
+             memory by hand (VirtualAlloc / LoadLibraryA / GetProcAddress / VirtualProtect) and
+             calls its entry point with DLL_PROCESS_ATTACH.
+    Stage 2  A UPX-packed DLL (sections UPX0 / UPX1 / UPX2, UPX 1.x stub, NRV2B-LE32).
+    Stage 3  The decompressed 102,159-byte image of the real malware, a Conficker worm DLL.
+             Its plaintext strings and imports show: MS08-067 style SMB/RPC exploitation, a
+             payload-serving HTTP server, UPnP port mapping, domain-generation rendezvous,
+             a scareware download, svchost "netsvcs" service persistence, System Restore
+             reset, process-injection APIs and a Ukraine-avoidance check.
+
+* PACKED: YES.   ENCRYPTED: YES (hard-coded XOR keystream, recoverable).   OBFUSCATED: YES (heavy).
+  Evidence is in section 2; the mechanisms are in sections 6 and 7.
+
+* The decoding is bit-exact: the Adler-32 of the decoded compressed stream and the Adler-32 of
+  the decompressed image both match the values stored in the UPX pack header.
+
+* The unpacked strings match public descriptions of Conficker variant A item by item: 5-TLD
+  domain generator, the three IP-lookup sites, the six date-lookup sites, the
+  trafficconverter.biz/.../loadadv.exe download, GeoIP + keyboard-layout Ukraine avoidance, UPnP,
+  netsvcs service (section 8.4).
+
+* Stage 3 was rebuilt exactly as the UPX stub would (section 8.2) and disassembled; the behaviours
+  read in the code are in kido_program_flow_pseudocode.txt and tagged CODE in section 9.2. They
+  include an RSA-1024 signature gate (e = 50001) that only lets payloads signed by the operators run.
+  capa 9.2.1 finds NO capability in the file as received (the obfuscation defeats it) but 70 rules
+  in the rebuilt stage 3, and every hit agrees with the manual analysis (section 9.1).
+
+* NOT established: anything about run-time behaviour (nothing was executed); the origin of the
+  7,424-byte random block (characterised as dead data, most likely build-time padding, 6.7) and of
+  the 415-byte HTML trailer; the propagation, name-generation and UPnP internals, which are only
+  summarised on purpose. kido.zip was skipped as requested.
+
+
+================================================================================================
+2. IS IT PACKED, OBFUSCATED OR ENCRYPTED?   (direct answer)
+================================================================================================
+
+   PACKED = YES          ENCRYPTED = YES          OBFUSCATED = YES          (all three, in layers)
+
+2.1 PACKED - YES (two nested layers)
+    Layer A, the file itself - a custom crypter / reflective loader.
+      Not a commercial or well-known packer: TrID and a 4,462-signature PEiD-format database
+      find no packer signature (the entry point is genuine MSVC DLL start-up code, 6.5) and the
+      section names are ordinary (.text .rdata .data .reloc). The packing is structural:
+        - .data is 57,344 bytes (66% of the file), entropy 7.48, with no readable content;
+        - the import table is tiny (42 imports) and holds the classic loader set VirtualAlloc /
+          VirtualProtect / LoadLibraryA / GetProcAddress;
+        - the code maps a hidden PE image out of .data and calls its entry point (6.9).
+    Layer B, inside - the hidden DLL is UPX-packed: sections UPX0/UPX1/UPX2, "UPX!" pack header
+      (format 9 = win32/pe, method 2 = NRV2B-LE32, level 9), UPX DLL stub at the entry point.
+      39,670 compressed bytes expand to 102,159 bytes (38.8%).
+
+2.2 ENCRYPTED - YES (encoded with an embedded, position-dependent XOR keystream)
+    The 42,496-byte stage-2 DLL is stored in .data as  plaintext XOR keystream(address),  and
+    the 4-byte units inside every 256-byte block are additionally scrambled (offset XOR 0xDC).
+    Its MZ word and "PE\0\0" signature are erased. There is no external key - every constant is
+    inside the file - so this is obfuscation-grade, not cryptographic, protection. I recovered
+    it statically and confirmed the result with UPX's own Adler-32 values (6.10).
+    A further 7,424 bytes of random-looking data follow the image in .data. No stage-1 code
+    references them; they are dead data, most likely build-time padding (6.7).
+
+2.3 OBFUSCATED - YES (heavy; stage-1 code and headers)
+    - Scattered control flow: 177 JMPs in 3,263 instructions - 65 indirect through a 65-entry
+      code-pointer table in .data, 4 through a second table - and only 7 RETs. There is no
+      recognisable function structure apart from the CRT start-up.
+    - 67 inlined copies of the same encoded-array accessor (no helper function), driven by
+      constants kept in writable memory (opaque constants).
+    - Junk code: 90 x87 instructions whose results go to scratch variables nobody reads; about
+      50 of the 58 API call sites are decoys; decoy imports from ctype / math / security APIs.
+    - Header hygiene: Rich header zeroed, implausible timestamps, import descriptors without an
+      OriginalFirstThunk, signatures of the embedded image erased.
+    - Tool corroboration: capa 9.2.1 reports "no capabilities found" for the file (Vivisect finds
+      only 11 functions), and DiE 3.10 flags .data (entropy 7.48) as packed (6.5, 9.1).
+    NOT present in stage 1: anti-debugging, anti-VM, SEH tricks, TLS callbacks, self-modifying
+    code, per-string encryption. (Stage 1 holds no meaningful strings at all; the hiding is done
+    by the layering.)
+
+2.4 Where the strings went
+    kido.sample itself contains no URLs, IPs, registry keys, mutexes or file paths (6.6). They
+    live in layer 3 and are plaintext once layers 1 and 2 are undone (section 8).
+
+
+================================================================================================
+3. SCOPE, METHOD, TOOLING, EVIDENCE LEGEND
+================================================================================================
+Rule followed : the sample was only ever read as data. Nothing was run, debugged or loaded. The
+                analysis VM that the user provided (VMware guest on the analyst's PC, Windows 11,
+                bridged to the home LAN) was used ONLY to run static tools on copies of the files;
+                the sample was never executed there.
+Tools used    : pefile 2024.8.26; Capstone 5.0.7 (disassembly); TrID 2.47; PEiD-format signature
+                database from ExeinfoPE (userdb.txt, 4,462 signatures, used as data only);
+                GNU strings; YARA 4.3.2 (pe and math modules); Python 3.12 run in isolated mode
+                (-I) from outside the sample folder, scripts kept in a separate scratch folder.
+                On the VM (C:\Tools): capa 9.2.1 (standalone, Vivisect backend) and Detect It Easy
+                3.10 (diec), both run over SSH on the sample and on the rebuilt stage-3 PE (9.1).
+NOT used      : FLOSS - installed but deliberately not run: its decoding stage emulates code.
+                No debugger, sandbox, FakeNet-NG, Procmon or Regshot: those need execution.
+How layers 2/3 were obtained:
+                I re-implemented, in Python and on in-memory copies, (a) the decode routine found
+                in the stage-1 code and (b) the documented UPX NRV2B-LE32 decompressor. No sample
+                code was executed. Transient copies of the decoded layers were written to the
+                session scratch folder (outside the project) only to test the YARA rules, and
+                were deleted afterwards. For capa / DiE the rebuilt stage 3 was written out as a
+                standalone PE (9.1) and copied, with the sample, to a work folder on the VM under
+                non-executable names (.bin / .sample). The VM copies were deleted after the run and
+                neither file is in the project folder, which holds this report, the flow document
+                and the strings inventory.
+Web research  : the SRI / USENIX Conficker analysis was consulted to corroborate attribution
+                (section 15). The primary USENIX URL failed; the content was read from the
+                static.usenix.org mirror by a web-fetch helper, so [PUB] items are second-hand.
+Evidence tags : [CODE] read in the disassembly (stage 1; stage 3 since the second pass)
+                [DATA] seen in file bytes / headers     [STR] plaintext strings / imports of a layer
+                [FN]   function level only (APIs, strings, call graph; stage 3)
+                [PUB]  corroborated by public reporting [INF] analyst inference
+                [capa] also matched by capa 9.2.1 (section 9.1)
+
+
+================================================================================================
+4. FILE IDENTIFICATION AND HASHES
+================================================================================================
+4.1 The sample
+  Type        : PE32 executable (DLL), Intel 386, subsystem Windows GUI.
+                TrID: Win32 DLL (generic) 27.1%, Win16 NE 20.8%, Win32 EXE (generic) 18.6%
+                (no packer / installer signature).
+  Size        : 86,431 bytes = 86,016 bytes PE image (0x15000) + 415 bytes trailer (6.7)
+  MD5         : 0296ab9d97f11d941ccbbf06ac79c08f
+  SHA-1       : 981ec6b4658d603fcbf08aead7fc1a3039a451bb
+  SHA-256     : d7d501e0aaeef3b9ed324d423b0309831f42dd8ab10e28a01f1238bddb5155d1
+  CRC-32      : 0x86966099
+  Imphash     : 4f201eef2d206043c7ff1dea4fc0b4bf
+  Entropy     : whole file 6.738
+
+  Hashes of parts (useful if another copy differs only in the trailer):
+    PE image only (bytes 0 .. 0x14FFF) : md5 1db5476c766555c9995b25d19f97b9bc
+                 sha256 02137e9426258e8d1186dc21ee344ffc5cdb3f068a6600ba1897fd9d27ccba43
+    Trailer (415 bytes, HTML)          : md5 ebf87808253b9892ef15bdfdbd1b7203
+                 sha256 4a756dfd83816c8680b9def66eb282d1639436a59d19c5321bd020dd9dc8fda9
+    Random block (7,424 bytes @0x10688): md5 baf4dca47dda203c683bb9ba6f0a3a86
+                 sha256 03a1e84318c1e5f300dce473ed24a39ee211703537b66d146771dae8c48b8a84
+    Section MD5: .text 47eea4bbf1e51c398a78a0cc335c05fe  .rdata 0bc4f0abaccb5b20de06747c1fabc5e8
+                 .data 36b9e9ca08636d48b0ba2050553c92d7  .reloc 625de9a436ee4c48d5ebbda35f048700
+
+4.2 Derived artifacts (decoded in memory by this analysis; they are not files in the sample)
+  Stage 2, as stored (signatures erased)  42,496 bytes
+      md5 2e63477fb559421e1cea2e95aa15a4eb
+      sha256 d23f781ed211c5c69ecbfa7b4c630f8ce81b7d093f812f16d7812b1ccc700d48
+  Stage 2, MZ + PE signatures restored    42,496 bytes (a valid UPX-packed PE)
+      md5 8f0e63c5a589c404795265f2b3f740c0
+      sha256 568b7b512cb0b2f920e89140c56ef643a39643db2cfe7a92e8d15049938e0a6e
+  Stage 3, UPX-decompressed image buffer 102,159 bytes (UPX internal form: call-filter and
+      relocation transforms NOT undone, so this is not a runnable/loadable PE)
+      md5 7c4f4218c550f0c4c8405be15eb1896f
+      sha1 53053e0c1882edd071db2f07ec609752ecf1ac75
+      sha256 b4b4e5da222e9f9f3c053ee4b5562d82c235b982a598138693dfb8b685ce5122
+  Stage 3, rebuilt as a standalone PE (call filter undone, 1,230 fixups applied, import table and
+      relocation table regenerated; file offset == RVA; built for capa / DiE, see 9.1)  106,496 bytes
+      md5 4bf4ecb0b6e9d165d0e17ee982df7311
+      sha1 ce6e3ebacd5c4c2fa266ed09606d9c5e6b17a5d4
+      sha256 19f2274c7332da0b31c89ebf62beac26be6f7ebbb2707d3da056089b84b07d49
+      imphash 82b19ba2443e8f1149fb1872dd312ca9 (computed over the REBUILT import table)
+
+4.3 kido.zip (same folder) - metadata only, NOT opened
+  60,939 bytes, sha256 114a4c8aafa4242e60b6f02f7671392ce1f98f0ffe7bd5cb529ba3536dba2d70.
+  Its central directory lists one entry named "kido.sample": ZIP-encrypted (password protected),
+  63,391 bytes uncompressed, 60,783 compressed, CRC-32 0xAA5D3911.
+  The user states that it is the same sample in a password-protected archive. The listed size and
+  CRC differ from the analysed file (86,431 bytes, CRC-32 0x86966099), so I make no claim either way.
+  Nothing was extracted or decrypted; it was skipped as requested.
+
+
+================================================================================================
+5. LAYER MAP
+================================================================================================
+ kido.sample (86,431 B)   STAGE 1  PE32 DLL, obfuscated reflective loader / crypter
+ |  header page 0x1000    Rich header zeroed, forged-looking timestamp
+ |  .text   0x1000-0x43ED   3,263 instructions, scattered blocks, decoy API calls   [OBFUSCATED]
+ |  .rdata  0x5000          import tables only
+ |  .data   0x6000, 57,344 B
+ |     +- 0x0088..0xA687   42,496 B  ENCODED stage-2 image                           [ENCRYPTED]
+ |     +- 0xA688..0xC387    7,424 B  random-looking, unreferenced                     [UNKNOWN]
+ |     +- 0xD088..0xD208           opaque variables + 65-entry jump-slot table
+ |  .reloc  0x14000         1,078 relocation entries (for stage 1's own absolute addresses)
+ |  trailer 415 B           HTML "Refresh" page, not part of the image
+ |
+ +-- decode: dword XOR keystream(address), 256-byte block scramble (offset ^ 0xDC) -->
+     STAGE 2  42,496 B   PE32 DLL, sections UPX0 / UPX1 / UPX2                       [PACKED: UPX]
+     |  "UPX!" header v13 / win32-pe / NRV2B-LE32 / level 9; DLL stub at EP 0x1AB00
+     |  compressed stream: 39,670 B at stage-2 offset 0x400 (Adler-32 verified)
+     |
+     +-- UPX NRV2B-LE32 decompression (Adler-32 verified) -->
+         STAGE 3  102,159 B image  (original DLL: .text / .data / .reloc, 84,992 B on disk)
+                  Conficker / Kido worm, plaintext strings, 169 imports from 12 DLLs
+
+
+================================================================================================
+6. STAGE 1 - THE FILE ITSELF (obfuscated reflective loader)
+================================================================================================
+6.1 PE header facts  [DATA]
+  Machine / type       : 0x014C i386; DLL; Characteristics 0x210E
+  Subsystem            : 2 (Windows GUI)       OS/image/subsystem version 4.0 / 5.0 / 4.0
+  Linker version       : 7.0 (see 6.11 - doubtful)
+  TimeDateStamp        : 0x39DF5AFB = 2000-10-07 17:18:51 UTC (see 6.11 - unreliable)
+  Entry point          : RVA 0x434B (MSVC _DllMainCRTStartup); ImageBase 0x10000000
+  SizeOfImage/Headers  : 0x15000 / 0x1000
+  Section/File align   : 0x1000 / 0x1000 (file layout == memory layout)
+  DllCharacteristics   : 0x0000 (no ASLR, no DEP/NX opt-in, no SEH-safe flag)
+  Checksum             : header 0x00000000 (computed 0x0002254B)
+  Rich header          : absent; bytes 0x7E..0xD7 are all zero (e_lfanew = 0xD8 leaves the room)
+  Data directories     : only Import (0x50C0, 0x64) and Base-reloc (0x14000, 0x89C) are set
+
+6.2 Sections and .data map  [DATA]
+  Name    VirtAddr    VirtSize    RawPtr      RawSize     Flags       Entropy  Notes
+  .text   0x00001000  0x000033EE  0x00001000  0x00004000  0x60000020  5.384    code (R-X)
+  .rdata  0x00005000  0x00000478  0x00005000  0x00001000  0x40000040  1.394    imports only
+  .data   0x00006000  0x0000DAA8  0x00006000  0x0000E000  0xC0000040  7.484    RW-, 57,344 B raw
+  .reloc  0x00014000  0x00000968  0x00014000  0x00001000  0x42000040  4.544    1,078 entries
+
+  .data layout (offsets relative to .data start = file 0x6000 = RVA 0x6000):
+    +0x0000..0x000F  zero pad
+    +0x0010..0x0037  10 code pointers into .text (indirect-jump targets)
+    +0x003C          dword 0x86E61B46  (constant "C2" of the keystream)
+    +0x0068          dword 0xC41972EB  (constant "C1" of the keystream)
+    +0x0088..0xA687  ENCODED STAGE-2 IMAGE, 42,496 bytes (VA 0x10006088 = array base)
+    +0xA688..0xC387  7,424 bytes of random-looking data, unreferenced (6.7)
+    +0xC388..0xD087  zero fill
+    +0xD088..0xD104  initialised "opaque" variables: shift counts (2, 1, 8), PE field offsets
+                     (0x14, 0x28, 0x34 ...), 0xE0, 0xFFF, 0x1000 ...
+    +0xD108..0xD208  65-entry jump-slot table: code pointers into .text
+    +0xD209..0xDAA7  zero-initialised globals / scratch buffers
+
+6.3 Imports  [DATA][CODE]   42 imports from 4 DLLs, no OriginalFirstThunk (import table rebuilt)
+  KERNEL32 (12): LocalFlags, VirtualAlloc, VirtualProtect, GlobalFlags, GetVersionExA,
+                 IsDBCSLeadByte, GetProcAddress, InterlockedExchange, InterlockedDecrement,
+                 GetComputerNameA, LoadLibraryA, VirtualQuery
+  ADVAPI32 (6) : IsValidSid, InitializeSecurityDescriptor, IsValidSecurityDescriptor,
+                 GetUserNameA, RevertToSelf, IsValidAcl
+  MSVCRT  (20) : _isctype, _adjust_fdiv, malloc, __doserrno, ldiv, _hypot, modf, localeconv,
+                 frexp, ceil, _pctype, ldexp, __mb_cur_max, _CIsinh, _CIcosh, _CItanh, memchr,
+                 _memicmp, free, _initterm
+  USER32  (4)  : IsCharAlphaNumericA, IsCharUpperA, IsCharLowerA, IsCharAlphaA
+
+  Real loader APIs : VirtualAlloc, VirtualProtect, LoadLibraryA, GetProcAddress
+                     (+ malloc/free/_initterm/_adjust_fdiv used by the CRT start-up code)
+  Everything else  : decoys. Of 58 direct "call [IAT]" sites, about 50 are decoys, e.g.
+        IsCharLowerA(-0x41); _isctype(0x87, 0x103); VirtualQuery(0x58F30000, ...) with the
+        result ignored; GetVersionExA on a scratch buffer; RevertToSelf() with no purpose.
+        GetUserNameA / GetComputerNameA are called with well-formed arguments, but their output
+        buffers (VA 0x10013320, 0x100138E0) are referenced nowhere else - the names are never
+        used.
+  Absent           : any file, registry, process, service or network API. Stage 1 cannot itself
+                     do any of that; it exists to deliver stage 2.
+
+6.4 Other directories  [DATA]
+  Exports: none.  Resources: none.  TLS: none.  Debug: none.  Digital signature: none.
+  Base relocations: 6 blocks / 1,078 entries.
+
+6.5 Compiler and packer detection  [DATA][CODE]
+  Compiler : Microsoft Visual C++ family. The entry point (RVA 0x434B) is the standard MSVC DLL
+             CRT start-up (_DllMainCRTStartup: dispatch on fdwReason 0/1/2/3, _CRT_INIT,
+             _initterm, call to DllMain at 0x4110). The PEiD-format DB matches it as
+             "Microsoft Visual C++ 6.0 DLL" (72-byte signature, strongest hit). The header
+             nevertheless says linker 7.0 - see 6.11. The exact toolchain build cannot be
+             confirmed (Rich header removed).
+  Packer   : no known packer signature. Short generic hit "Armadillo v1.xx-v2.xx" (17 bytes) is
+             the generic MSVC prologue and is a false positive (no Armadillo sections or strings).
+             TrID: nothing. Packing is custom - see 2.1 and 6.9.
+  DiE 3.10 : (diec, --deepscan --heuristicscan --entropy; run on the analysis VM)            [DATA]
+             PE32; Compiler: Microsoft Visual C/C++ 12.00 [msvcrt] (the VC6-era CRT, which agrees
+             with the PEiD-format hit above); Packer: only the heuristic "Compressed or packed data".
+             No named packer or protector. Entropy: whole file 6.738 ("packed"); PE header 0.458;
+             .text 5.384; .rdata 1.395; .data 7.484 ("packed"); .reloc 4.544; overlay (415 bytes at
+             file offset 86,016 = the HTML trailer) 5.381. Consistent with a custom crypter whose
+             payload sits in .data.
+  capa 9.2.1 : "no capabilities found". Vivisect recovered only 11 functions (2 of them CRT library
+             functions: __CRT_INIT and __DllMainCRTStartup, the latter at the entry point RVA
+             0x434B) and 1,422 features: the indirect-jump obfuscation hides the loader from
+             automatic capability matching, so a rule-based scan of the file at rest sees nothing
+             (see 9.1).                                                                      [DATA]
+
+6.6 Strings  [DATA]
+  Only the DOS-stub message, section names and the 42 import names are visible (ASCII and
+  UTF-16, length >= 5). There are no URLs, domains, IPs, registry keys, mutexes or file paths.
+  The two URLs in the trailer (w3.org DTD references) are boilerplate, not indicators.
+
+6.7 Trailer and unexplained data  [DATA]
+  Trailer (file 0x15000, 415 bytes): a minimal HTML page:
+      <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" ...>  <META HTTP-EQUIV="Refresh"
+      CONTENT="0.1"> <META HTTP-EQUIV="Pragma" CONTENT="no-cache"> <META HTTP-EQUIV="Expires"
+      CONTENT="-1"> <TITLE></TITLE> <BODY><P></BODY>
+  It is outside the image and ignored by the PE loader. No layer contains matching HTML (the worm's
+  strings have none), no code emits it, and the worm's own handling of "data after the PE image"
+  (a geo-database candidate, flow document 3.7) cannot use it. Origin: most consistent with a
+  collection / transport artefact, for example a gateway's meta-refresh page appended to the
+  download [INF]; deliberate padding is the alternative. When comparing copies, hash the PE-image
+  portion (4.1), which excludes it.
+
+  Random block (file 0x10688..0x12387, 7,424 bytes = 29 x 256): entropy 7.976, chi-square 240
+  (random is ~255 +/- 23). Tests run on it, all negative:
+    (a) uniformity: each of its 29 sub-blocks has entropy 7.07..7.32 per 256 bytes (random: ~7.2) and
+        155..176 distinct byte values (random: ~162); no repeated 8-byte windows;
+    (b) no magic numbers (MZ, PE, UPX!, gzip, zlib, bzip2, 7z, RAR, ZIP, CAB, GeoIP, HTML, JPEG, PNG,
+        ELF) in the raw block or in five decodings with the image keystream (continuing array 1;
+        own array with logical origin 0, 0xA500, 0xC300 and 0x10000);
+    (c) no zlib / raw-deflate / gzip / bzip2 / lzma / UPX-NRV2B stream decodes from it; the three short
+        deflate "hits" in decoded variants have repetitive low-entropy output (chance artefacts);
+    (d) not an LCG byte stream: exhaustive seed search for the MSVCRT, ANSI/glibc, Borland, Numerical
+        Recipes, Delphi and VAX generators (byte = bits 0-7, 8-15 or 16-23 of the state, raw and
+        decoded block): no match. The top-byte variants (Numerical Recipes, Delphi: byte = bits 24-31)
+        were searched over the full 32-bit seed space: no match either;
+    (e) reachability: no stage-1 instruction addresses it, and the loader's read range is bounded by
+        the headers of the image it maps (highest byte read: logical 0xA5FF), so nothing in stage 1
+        consumes it. Its size is a whole number of the 256-byte blocks of the address scramble, but
+        the image already ends on a 256-byte boundary, so it was not needed for alignment.
+  Conclusion: dead data. Most probably build-time junk padding (per-build variation or dilution of
+  static signatures). It is not a second payload, key or configuration that any layer reads. Its exact
+  generator is not determinable statically; comparing it with other builds would show whether it varies
+  per build.
+
+6.8 Code obfuscation analysis  [CODE]  (linear sweep of .text: 3,263 instructions)
+  Technique                         Evidence
+  --------------------------------  -------------------------------------------------------------
+  Scattered basic blocks            177 JMP; 92 direct jumps into .text; only 7 RET; every block
+                                    ends in a jump; DllMain at 0x4110 jumps at once to 0x31A5.
+  Indirect jumps through tables     65 "jmp [0x1001xxxx]" through the 65-entry slot table at
+                                    .data+0xD108; 4 through the static table at .data+0x10.
+                                    Targets are static in the file, so the graph is recoverable.
+  Inlined encoded-array accessor    67 copies of the same ~15-instruction sequence (or reg,
+                                    0x0A0A0082 / xor reg,0xDC / key constants / shifts) with
+                                    no helper function (6.10).
+  Opaque constants in memory        Shift counts (2, 1, 8) and index offsets live in writable
+                                    .data variables instead of immediates.
+  Stack constant pool               DllMain's prologue stores 19 constants at [esp+...]: values
+                                    that act as PE offsets/sizes or masks (0x18, 0x24, 0x28,
+                                    0x10, 0x1000, mask 0xFFFFFFFC at [esp+0xC]) mixed with junk-
+                                    looking ones (0x2ED50000, 0x67A10000, 0x77240000, ...).
+  Junk floating point               90 x87 instructions (fild/fstp/fcos/fsin/fpatan/fsqrt) whose
+                                    results are stored to .data and never read.
+  Decoy API calls / decoy imports   see 6.3; ~50 of 58 call sites.
+  Header tampering                  Rich header zeroed; import descriptors without INT; see 6.11.
+  Effect: defeats string/import-based triage, naive linear and CFG recovery, and entropy-free
+  extraction of the payload. It does NOT defeat static recovery: the key function, base address
+  and tables are all in the file.
+  Not found: rdtsc/cpuid/sidt/int 2d, PEB or FS: access, SEH setup, TLS callbacks; the only
+  INT3 bytes are inter-function padding.
+
+6.9 Loader flow reconstructed from code  [CODE]
+  1. 0x434B   Standard MSVC CRT entry; reason-code dispatch; calls DllMain (0x4110).
+  2. 0x4110   DllMain builds the stack constant pool and jumps into the scattered blocks.
+  3. 0x1D03   Array base:  lea ebx,[eax*4 + 0x10006088]  ->  [0x10013720]
+              (eax = [0x1001321C], which is zero in the file, so base = .data+0x88).
+  4. (many)   Header parsing of the embedded image through the accessor, with PE field offsets
+              used as constants: e_lfanew (0x3C), SizeOfOptionalHeader (NT+0x14), optional header
+              (NT+0x18), AddressOfEntryPoint (NT+0x28), ImageBase (NT+0x34), section header
+              size 0x28, section Characteristics (+0x24), page rounding 0xFFF/0x1000.
+  5. 0x1B40 / 0x1BC7 / 0x19CE  Memory:  VirtualAlloc(preferred base, image size, MEM_RESERVE
+              0x2000, PAGE_NOACCESS), then commit calls VirtualAlloc(base + offset, size,
+              MEM_COMMIT 0x1000, protection) for the headers and the sections (the call at
+              0x19CE uses PAGE_READWRITE).
+  6. 0x1D4B   Copy: decoded bytes are stored one by one (mov [eax+ecx], dl).
+  7. 0x2C98 / 0x1677 / 0x1027  Imports: LoadLibraryA(base + descriptor.Name); GetProcAddress by
+              name (base + thunk RVA + 2, i.e. skipping the IMAGE_IMPORT_BY_NAME hint) or by
+              masked 16-bit ordinal (and eax,0xFFFF); result stored in the IAT slot.
+  7b. 0x1758 / 0x32F8  Relocation: stage 1 and stage 2 share ImageBase 0x10000000, so that address is
+              normally taken by stage 1 itself and stage 2 lands elsewhere. For every WORD entry of
+              the relocation directory the loader takes type = entry >> 12 (shift count 12 is kept in
+              the opaque variable .data+0xD0BC) and, for type 3 (HIGHLOW), adds (actual base - preferred
+              base) to the dword at page + (entry & 0xFFF) (mask 0xFFF in .data+0xD0E0).   [CODE]
+  8. 0x236A   VirtualProtect per section, protection derived from the IMAGE_SCN_* flags
+              (code at 0x1D5F maps the "writable" flag 0x80000000 to 0x40 / 0x20).
+  9. 0x1708   Hand-off: push lpvReserved; push 1 (DLL_PROCESS_ATTACH); push base;
+              add eax,ecx (base + AddressOfEntryPoint); call eax; ... ret 0Ch.
+  Result: stage 2 is mapped into the host process, rebased if necessary, and its entry point runs.
+  Nothing else of note happens in stage 1.
+
+6.10 Encoding scheme of the embedded image, and how it was verified  [CODE][DATA]
+  Accessor semantics (logical byte index i inside the embedded image):
+      d    = little-endian dword at  file[0x6088 + ((i & ~3) ^ 0xDC)]
+      t    = (((i & ~3) >> 2) | 0x0A0A0082) << 1                          (mod 2^32)
+      key  = (t XOR C1) - C2                                              (mod 2^32)
+      byte = ((d XOR key) >> (8 * (i & 3))) & 0xFF
+      C1 = dword @ file 0x6068 = 0xC41972EB      C2 = dword @ file 0x603C = 0x86E61B46
+      (shift counts 2, 1 and 8 are read from .data+0xD0C0, +0xD104, +0xD0C8)
+  Observations that pin the scheme down:
+    - The first dwords of the array (file 0x6088: 3F 58 27 49 41 58 27 49 ...) are exactly the
+      keystream of zero plaintext for logical address 0xDC - i.e. zero padding of the DOS-header
+      gap, which also explains the stray "X'I" pattern seen by strings.
+    - Decoded logical bytes 0x4E.. read "This program cannot be run in DOS mode.", followed by a
+      sane PE32 header (Machine 0x14C, 3 sections, optional-header magic 0x10B, ImageBase
+      0x10000000, SizeOfImage 0x1C000, EP 0x1AB00).
+    - Two dwords do NOT decode to valid magic: logical 0 (0x0090A808 instead of 0x00905A4D) and
+      logical 0x108 (0x11EDFB9B instead of "PE\0\0"). The signatures were erased on purpose; the
+      loader parses fields by offset and does not need them.
+  Verification (all passed):
+    (1) Adler-32 of the 39,670 decoded bytes at stage-2 offset 0x400 = 0xD8446DB7 = the c_adler
+        stored in the UPX header (chance of coincidence ~ 2^-32).
+    (2) NRV2B decompression consumed exactly 39,670 of 39,670 bytes and produced exactly 102,159
+        bytes = u_len; Adler-32 0x51C74D4C = stored u_adler.
+    (3) The PEiD-format DB identifies the decoded stage-2 entry point as a UPX DLL stub.
+  The constants (0x0A0A0082, C1, C2, 0xDC, array base) are probably per-build parameters; hence
+  the exact-build marker rule in section 13.
+
+6.11 Metadata anomalies / forgery indicators  [DATA][INF]
+  - Stage-1 TimeDateStamp 2000-10-07 predates the family's first public appearance (Nov 2008)
+    by ~8 years. Linker version 7.0 is hard to reconcile with the Visual C++ 6.0 DLL start-up
+    signature at the entry point and with the use of msvcrt.dll (VC6-era CRT). Combined with the
+    zeroed Rich header and import descriptors lacking an OriginalFirstThunk (MSVC linkers
+    normally emit it), the header looks post-processed. Treat all compile-time metadata as
+    unreliable.
+  - Stage-2 header copy: TimeDateStamp 0x3F73A4C6 = 2003-09-26 02:30:30 UTC. The same DLL
+    embeds zlib banners "deflate/inflate 1.2.3 Copyright 1995-2005", so it cannot have been built
+    in 2003: this timestamp is false as well.
+  - Stage-2 SizeOfHeaders is 0x1000 although the first section starts at file offset 0x400
+    (non-standard; noted, not interpreted).
+  - FileAlignment == SectionAlignment == 0x1000, DllCharacteristics 0, no debug info.
+
+
+================================================================================================
+7. STAGE 2 - EMBEDDED UPX-PACKED DLL
+================================================================================================
+7.1 Header (decoded, signatures restored in memory)  [DATA]
+  Machine 0x14C, DLL, 3 sections, linker 5.0, Characteristics 0x210E, subsystem GUI
+  ImageBase 0x10000000; SectionAlignment 0x1000; FileAlignment 0x200
+  SizeOfImage 0x1C000; SizeOfHeaders 0x1000; entry point RVA 0x1AB00 (inside UPX1)
+  Data directories: Import RVA 0x1B000 size 0x2DC; Base-reloc RVA 0x1B2DC size 0xC
+  Section   VirtAddr    VirtSize    RawPtr      RawSize     Flags       Entropy
+  UPX0      0x00001000  0x00010000  0x00000400  0x00000000  0xE0000080  (no raw data)
+  UPX1      0x00011000  0x0000A000  0x00000400  0x00009E00  0xE0000040  7.893
+  UPX2      0x0001B000  0x00001000  0x0000A200  0x00000400  0xC0000040  3.285
+  Total decoded size 0xA600 (42,496); the 7,424 random bytes of 6.7 lie beyond it.
+
+7.2 UPX pack header at stage-2 offset 0x3E0  [DATA]
+  55 50 58 21 0D 09 02 09 4C 4D C7 51 B7 6D 44 D8 0F 8F 01 00 F6 9A 00 00 00 4C 01 00 26 06 00 D8
+  magic "UPX!"   version 13   format 9 (win32/pe)   method 2 (NRV2B-LE32)   level 9
+  u_adler 0x51C74D4C   c_adler 0xD8446DB7
+  u_len 0x18F0F (102,159)   c_len 0x9AF6 (39,670)   u_file_size 0x14C00 (84,992)
+  filter 0x26 (a UPX x86 call/jump filter), filter_cto 0x06
+  Stub at EP: 80 7C 24 08 01 0F 85 C2 01 00 00 60 BE 00 10 01 10 8D BE 00 00 FF FF 57 ...
+  (cmp byte [esp+8],1 ...) = UPX DLL stub; PEiD-format DB: "UPX v0.89.6-v1.02 / v1.05-v1.22 DLL".
+  Pack-header version 13 is a format version, not a tool version; the stub points to a UPX 1.x
+  release. The UPX layer is stock - no custom decompressor.
+
+7.3 Stub imports (UPX keeps one import per DLL)  [DATA]
+  KERNEL32: LoadLibraryA, GetProcAddress, VirtualProtect, VirtualAlloc, VirtualFree
+  ADVAPI32 RegCloseKey | MPR WNetAddConnection2A | MSVCRT sin | ole32 CoUninitialize |
+  OLEAUT32 SysFreeString | RPCRT4 NdrClientCall2 | urlmon URLDownloadToFileA |
+  USER32 GetKeyboardLayoutList | VERSION VerQueryValueA | WININET InternetOpenA | WS2_32 inet_addr
+  The first function of each of the 12 DLLs already hints at SMB, RPC, HTTP-download, keyboard
+  layout and Winsock use.
+
+
+================================================================================================
+8. STAGE 3 - UNPACKED PAYLOAD (Conficker worm)
+================================================================================================
+8.1 What was recovered  [DATA]
+  The UPX stream decompresses to a 102,159-byte image of the original DLL laid out from RVA
+  0x1000 (buffer offset = RVA - 0x1000), plus UPX's appended import list, relocation stream and
+  a copy of the original PE header (buffer 0x18D8E).
+  Original header (from that copy): PE32 DLL, 3 sections, linker 5.0, EP RVA 0x133F9,
+    ImageBase 0x10000000, SizeOfImage 0x19000, SizeOfHeaders 0x400.
+    .text   VA 0x1000   VSize 0x13242  raw 0x13400  (R-X)   - contains IAT, strings, zlib, code
+    .data   VA 0x15000  VSize 0x2870   raw 0x600    (RW-)
+    .reloc  VA 0x18000  VSize 0x0DE4   raw 0xE00
+    Directories: Import 0x13548/0x104, Base-reloc 0x18000/0xA30, IAT 0x1000/0x2D4. No exports,
+    no resources. Original file size 84,992 bytes (0x14C00).
+  Imports: 169 from 12 DLLs (Appendix B). The code embeds zlib 1.2.3 (inflate and deflate).
+
+8.2 How stage 3 was analysed  [CODE]
+  The first pass used only strings and imports. Stage 3 was then rebuilt exactly as the UPX stub does
+  it (call filter undone at 627 sites, 169 imports resolved, 1,230 relocations applied; the relocation
+  stream ends exactly at the preserved PE header copy and every fixed-up pointer lands inside the
+  image) and disassembled (181 functions). The code-level findings are in
+  kido_program_flow_pseudocode.txt. Sections 8.3 and 8.4 below remain the string-level view.
+
+8.3 Plaintext strings of stage 3, by theme  [STR]   (buffer offsets in parentheses)
+  Mutex / naming   Global\%u-%u (0x2E4)   %08x%08x (0x33C)   n%08x%08x%08x, w%08x%08x%08x,
+                   l%08x%08x%08x (0x654..)   ".dll" (0x2D8)
+  External IP      http://www.getmyip.org (0x38C)   http://getmyip.co.uk (0x3A4)
+                   http://checkip.dyndns.org (0x3BC)   "ip address" (0x3D8)
+  Payload server   HTTP/1.0 200 OK   Pragma: no-cache   Content-Length: %u
+  / peer fetch     Content-Type: image/jpeg   windows nt 5.   user-agent:   get /%s http/ (0xB18..)
+                   http://%d.%d.%d.%d:%d/%s (0x4BC)   GET %s HTTP/1.1   Host: %s:%d (0x51C0)
+  SMB / RPC        \\%s\IPC$ (0x4D8)   ncacn_np (0x500)   \pipe\srvsvc (0x51A)
+                   \pipe\browser (0x54C)   \\%d.%d.%d.%d (0x578)   NetpwPathCanonicalize (0x5BC)
+                   netapi32.dll   kernel32.dll   LoadLibraryA   services.exe (0x604)
+                   NetBIOS name "CKFDENECFDEFFCFGEFFCCACACACACACA" (= *SMBSERVER), SMB templates
+                   "SMBr"/"SMBs", NT LM 0.12, LANMAN, unix, windows 4.0 / 5.0 / 5.1,
+                   service pack / 1 / 2, windows server 2003, vista (0x9C3..0xB00)
+  Persistence      (UTF-16) SOFTWARE\Microsoft\Windows NT\CurrentVersion\SvcHost (0x6B0)
+                   ServiceDll, Parameters, ObjectName, LocalSystem, ImagePath, ErrorControl,
+                   Start, Type, DisplayName, SYSTEM\CurrentControlSet\Services\ (0x7E0),
+                   %SystemRoot%\system32\svchost.exe -k  +  netsvcs (0x828 / 0x878)
+  Tampering        SharedAccess (0x644)   ResetSR (0x684)   srclient.dll (0x68C)
+                   SOFTWARE\Microsoft\Windows\CurrentVersion\Nls (0x614; purpose unclear)
+  Rendezvous       TLDs .biz .info .org .net .com (0x888..); month names Jan..Dec; sites
+                   w3.org ask.com msn.com yahoo.com google.com baidu.com (0x8E0);
+                   http://www.%s (0x924)  http://%s/search?q=%d&aq=%d (0x940);
+                   imports HttpQueryInfoA, InternetOpenUrlA, rand, srand
+  Download         http://trafficconverter.biz/4vir/antispyware/loadadv.exe (0x95C)
+                   http://trafficconverter.biz (0x998)   URLDownloadToFileA, ObtainUserAgentString
+  Geo-filter       http://www.maxmind.com/download/geoip/database/GeoIP.dat.gz (0x2E3C);
+                   zlib inflate/deflate 1.2.3; GetKeyboardLayoutList
+  UPnP / NAT       M-SEARCH * HTTP/1.1, HOST: 239.255.255.250:1900, MAN: "ssdp:discover",
+                   urn:schemas-upnp-org:service:WANIPConnection:1 / WANPPPConnection:1 /
+                   WANCommonInterfaceConfig:1, AddPortMapping, DeletePortMapping,
+                   GetExternalIPAddress, GetGenericPortMappingEntry, User-Agent: POSIX, UPnP/1.0,
+                   SOAPAction, CoCreateInstance (0x5200..0x57B0)
+
+8.4 Family and variant attribution  [STR][PUB]
+  The strings identify the Conficker worm family (aliases Downadup, Kido). Compared with the
+  SRI / USENIX analysis of variant A and B (section 15; read second-hand, see section 3):
+
+    Feature               This sample                        SRI description
+    --------------------  ---------------------------------  ----------------------------------
+    Domain-generator TLDs .biz .info .org .net .com (5)      A: com, net, org, info, biz.
+                          no .ws / .cn / .cc                 B adds ws, cn, cc.
+    External-IP sites     getmyip.org, getmyip.co.uk,        A: exactly these three.
+                          checkip.dyndns.org                 B: a different set.
+    Date-lookup sites     w3.org ask.com msn.com yahoo.com   A: exactly these six; the HTTP
+                          google.com baidu.com + HttpQuery-  Date header is read.
+                          InfoA import
+    Scareware download    trafficconverter.biz/4vir/         A: loadadv.exe from this path.
+                          antispyware/loadadv.exe            B: does not download it.
+    Ukraine avoidance     GetKeyboardLayoutList import and   A: keyboard-layout check AND
+                          MaxMind GeoIP.dat.gz URL           GeoIP-based address filtering.
+                                                             B: neither.
+    UPnP                  SSDP M-SEARCH, AddPortMapping      A: UPnP used to open a high port.
+    Service persistence   SvcHost "netsvcs", ServiceDll      A: DLL runs inside svchost.exe.
+    MS08-067 surface      srvsvc / browser pipes, ncacn_np,  A: MS08-067 exploitation.
+                          NetpwPathCanonicalize
+
+  Conclusion: the payload matches Conficker variant A (the earliest generation, Nov 2008) and
+  does not carry B-specific markers. This is an attribution from strings against public
+  reporting; it was not checked against reference sample hashes. [INF] A build derived from
+  variant B would be expected to carry the extra TLDs (.ws .cn .cc) and B's different IP-lookup
+  list; neither is present.
+  Items without a public cross-check: Content-Type image/jpeg, ResetSR/srclient.dll, and the
+  exact mutex format (SRI gives "Global\<number>-<number>" style names).
+  Note on NetpwPathCanonicalize: next to "services.exe" and "netapi32.dll" it may belong to the
+  exploit shellcode or to an in-memory hot-patch of the vulnerable function; which one applies
+  was not verified.
+
+
+================================================================================================
+9. CAPABILITY REVIEW  (capa 9.2.1 results, then the manual review)
+================================================================================================
+Basis tags: [CODE] read at instruction level   [FN] function level (APIs, strings, call graph)
+            [STR] strings / imports only       [+capa] also matched by capa (9.1)
+
+9.1 capa 9.2.1  (standalone build with embedded rules, Vivisect backend)               [DATA][CODE]
+  capa and Detect It Easy were run on the analysis VM (C:\Tools) on copies of the files. They only
+  parse the files as data; nothing was executed. Two files were analysed.
+
+  a) kido.sample as received (stage 1)
+       Result: "no capabilities found". Vivisect recovers 11 functions (two of them CRT library
+       functions, __CRT_INIT and __DllMainCRTStartup) and 1,422 features: the loader's indirect
+       jumps defeat function recovery, so no rule can match. That is itself evidence of
+       obfuscation (2.3). DiE 3.10 results are in 6.5.
+
+  b) The rebuilt stage 3, written out as a standalone PE. This analysis created the file; the
+     sample does not contain it. 106,496 bytes, sha256
+     19f2274c7332da0b31c89ebf62beac26be6f7ebbb2707d3da056089b84b07d49. File offset equals RVA;
+     ImageBase 0x10000000; EP RVA 0x133F9; sections .text .data .reloc and .idata2 (the rebuilt
+     import table: 12 DLLs, 169 functions; imphash 82b19ba2443e8f1149fb1872dd312ca9, valid only
+     for this rebuilt table). The relocation table regenerated from the 1,230 recovered fixups is
+     exactly 0xA30 = 2,608 bytes, the size recorded in the original PE header that UPX preserved:
+     an independent check that the fixup list is complete.
+     DiE 3.10: Compiler "Microsoft Visual C/C++ 12.00 [msvcrt]"; not packed (entropy 5.56, .text
+     6.21); the heuristic "(Heur)Protection: Generic" has no meaning for a rebuilt file.
+     capa: 70 rules matched (58 capability rules + 12 library rules, marked lib) over 148 functions.
+
+  capa matches by theme. RVAs are those of the rebuilt image; function names are from section 7
+  of kido_program_flow_pseudocode.txt.
+
+  capa rule                                     first match RVAs      corresponds to
+  --------------------------------------------  --------------------  ----------------------------
+  INSTALL / PERSIST / HIDE
+  persist via Windows service                   0x9099                write_service_registry
+  stop service; get service handle (lib)        0x7F99                stop_service(SharedAccess)
+  timestomp file                                0x8054                timestomp_from_kernel32
+  copy / move / delete file; get file size      0x6847 0x6A3A 0x81A0  self-install, state files
+  read / write file on Windows                  0x8119 0x81A0 0x9312  read_file, write_buffer, temp
+  create / check mutex on Windows               0x6ADB 0x6A3A         init_and_guard
+  set / query registry value                    0x7CD4 0x8F81 0x7D25  state dword, svchost group
+  access firewall settings via INetFwMgr        0x6B73                open_firewall_port (COM)
+  INJECTION / HOOKING
+  enumerate processes                           0x7C20                find_process
+  open process; write process memory (lib);     0x7B75                remote LoadLibraryA injection
+    inject thread; spawn thread to RWX shellcode                      (services.exe, Windows 2000)
+  execute shellcode via indirect call;          0x799A 0x7A30         install_inline_hook
+    change memory protection (lib)                                    (NetpwPathCanonicalize patch)
+  contain pusha popa sequence (lib)             0x13080               instruction-length decoder
+  GUARDS / DISCOVERY
+  get keyboard layout                           0x67C0                Ukraine keyboard check
+  get OS version (lib); check OS version        0x6847                main_thread
+  get hostname                                  0x6A3A 0x6DB9         mutex-name input
+  get disk information                          0x7D84                volume_serial -> srand
+  get file version info                         0xC5AF                ntdll.dll language id
+  check Internet connectivity via WinINet (11)  0x6A16 0x728D 0x86BC  reachability gates
+  get local IPv4 addresses; get socket info     0xBD83 0x115F5        http_client_handler, UPnP
+  NETWORK
+  initialize Winsock; create TCP socket         0x6847 0xBADB         main; propagation chain
+  create UDP socket                             0x125D9               SSDP / UPnP
+  connect / send / receive data on socket       0x8385 0x82E1 0x8214  socket helpers
+  HTTP client: request, send, read, status, UA  0x8471 0x9460 0x115F5 http_get; date fetch; UPnP
+  resolve DNS                                   0x9818 0x115F5        rendezvous resolver; UPnP
+  download URL                                  0xC693                geo-database download
+  write and execute a file; create process      0x9312 0x9405         signature gate, then WinExec
+  create thread (13 sites)                      0x6B00 0x876F 0x89B3  worker threads
+  delay execution (lib, 30 sites)               0x6A04 0x8621         Sleep calls
+  DATA
+  hash data using SHA1                          0xB937                sha1_init
+  compress via zlib; linked against ZLIB        0xE1BD                inflate (deflate code linked)
+  encode data using XOR (7 sites)               0x7413 0x9B35 0xD1B3  URL buffer; RC4 xor; CRC-32
+  calculate modulo 256 (lib, 9 sites)           0x7388 0x7622         byte arithmetic
+  encrypt data using RC4 PRGA (2)               0x7364 0xD6B5         FALSE POSITIVES (below)
+
+  Every hit was reconciled against the disassembly; no unexplained match remains:
+   - "encrypt data using RC4 PRGA" fires twice and both are generic-pattern false positives.
+     0x7364 formats the self-URL "http://%d.%d.%d.%d:%d/%s" into a heap buffer behind a
+     0xB4-byte template and applies a single-byte XOR (0xC4) to part of it. 0xD6B5 is the
+     window-slide code of zlib's deflate.
+   - The real RC4 of the payload gate (0x9AC3 key schedule, 0x9B20 keystream XOR, 0x9B75 wrapper)
+     is not matched by any RC4 rule; capa reports only its XOR (0x9B35).
+   - "execute shellcode via indirect call" and "spawn thread to RWX shellcode" are capa's names for
+     the inline-hook installer (0x799A) and the services.exe injection (0x7B75). Neither runs
+     shellcode in the sense of the rule names.
+  What capa cannot see: the RSA big-number code (0x9C30..0x9DB4), the domain-name generation,
+  the UPnP / SSDP exchange, the SMB / RPC client and the propagation chain. No rule covers them,
+  so capa under-reports this sample; the manual review in 9.2 is the fuller list.
+  capa's ATT&CK and MBC tags are used in section 10 only where the code confirms them.
+
+9.2 Manual capability review  (stage-3 rows re-tagged after the code-level pass)
+
+  Capability                                                            Basis
+  --------------------------------------------------------------------  ------------------------
+  Decode embedded payload at runtime                                    CODE
+      Accessor code, 67 copies; Adler-32 of the decoded stream verified
+  Manual PE mapping / reflective load                                   CODE
+      VirtualAlloc, LoadLibraryA, GetProcAddress, VirtualProtect, base relocation, entry call with
+      reason 1
+  Decoy API calls, junk code                                            CODE
+      ~50 of 58 call sites, 90 x87 instructions
+  No anti-debug / anti-VM in stage 1                                    CODE
+      no rdtsc / cpuid / PEB / SEH / TLS
+  Network exploitation of SMB/RPC (MS08-067)                            FN
+      attack routine 0x78CC and its chain; srvsvc / browser pipes, ncacn_np, IPC$, SMB templates;
+      internals deliberately not documented
+  Defensive hot-patch of the same bug                                   CODE+capa
+      NetpwPathCanonicalize inline hook in every instance; rejects \..\ and long paths
+  Scanning / socket server                                              FN+capa
+      full Winsock set; capa: TCP / UDP socket, connect, send, receive
+  Payload-serving HTTP server                                           CODE
+      random port 1024..9999, image/jpeg reply, port opened through the firewall COM API
+  UPnP / NAT port mapping                                               FN+capa
+      SSDP + AddPortMapping + GetExternalIPAddress
+  External IP discovery                                                 FN+capa
+      getmyip.org, getmyip.co.uk, checkip.dyndns.org
+  Domain-generation rendezvous                                          CODE (gates), FN (rest)
+      250 names, 5 TLDs, <= 40 threads, every 3 h, date gate, date from an HTTP Date header;
+      the name algorithm is not documented
+  Download, verify, execute                                             CODE+capa
+      http_get -> RSA-1024 (e=50001) + SHA-1 + RC4 signature gate -> temp file 0XXXX.tmp -> WinExec
+  Geo filter / per-target language guess                                CODE+capa
+      GeoIP lookup, country "UA" -> excluded, 23 country-to-language groups, ntdll.dll language
+      as fallback
+  Ukraine avoidance (keyboard)                                          CODE+capa
+      GetKeyboardLayoutList: any layout with LANGID 0x422 -> it returns early and does nothing
+  Service persistence under svchost                                     CODE+capa
+      SvcHost netsvcs group, ServiceDll, random-letter name, empty DisplayName, Type 0x20, Start 2
+  Security-feature tampering                                            CODE+capa
+      ResetSR (System Restore), firewall COM API, SharedAccess service stop (capa matches the last
+      two, not ResetSR)
+  Process injection                                                     CODE+capa
+      services.exe, remote LoadLibraryA; runs on Windows 2000 only
+  Single-instance mutex                                                 CODE+capa
+      Global\<CRC-32(computer name)>-7
+  Timestomping                                                          CODE+capa
+      file times of the installed DLL copied from kernel32.dll
+  SMB share connection                                                  STR
+      WNetAddConnection2A / WNetCancelConnection2A
+  File handling / temp files                                            CODE+capa
+      CreateFileA ReadFile WriteFile CopyFileA MoveFileExA DeleteFileA GetTempFileNameA
+  Compression                                                           CODE+capa
+      zlib 1.2.3: inflate is used for GeoIP.dat.gz; deflate code is linked as well
+
+  No ransomware, keylogger, cryptominer or data-exfiltration code was found in the strings,
+  imports or the code read so far. The worm can download and run further payloads, but only ones
+  signed with the operators' RSA-1024 key (11.5, flow document 3.10); what it would run is
+  decided by whoever holds that key, so the impact on an infected host is open-ended in principle.
+
+
+================================================================================================
+10. MITRE ATT&CK MAPPING
+================================================================================================
+Technique IDs follow current ATT&CK naming. Three evidence classes:
+  Observed in code - stage 1    read in the stage-1 disassembly.
+  Confirmed in code - stage 3   read in the stage-3 disassembly. "capa" marks techniques that capa
+                                9.2.1 also tags on the matching function (9.1). Confidence is
+                                High unless stated, because the instructions were read.
+  Indicated - stage 3           strings / imports / function level only (flow-document tag [FN]).
+
+ [Observed in code - stage 1]
+ T1027      Obfuscated Files or Information ................................ High
+            Scattered control flow, junk x87 code, decoy calls, opaque constants.
+ T1027.002  Software Packing ............................................... High
+            Custom crypter around a UPX-packed DLL.
+ T1027.009  Embedded Payloads ............................................... High
+            42,496-byte stage-2 image inside .data.
+ T1027.013  Encrypted/Encoded File .......................................... High
+            Position-dependent XOR keystream + block scramble.
+ T1027.016  Junk Code Insertion ............................................. High
+ T1027.005  Indicator Removal from Tools .................................... Medium
+            Erased MZ/PE signatures, zeroed Rich header, false timestamps.
+ T1140      Deobfuscate/Decode Files or Information ......................... High
+ T1620      Reflective Code Loading ......................................... High
+            Manual mapping of a PE inside the process (no LoadLibrary of the payload).
+ T1106      Native API ..................................................... High
+            VirtualAlloc / VirtualProtect / LoadLibraryA / GetProcAddress.
+
+ [Confirmed in code - stage 3]
+ T1543.003  Create or Modify System Process: Windows Service ................ High   capa
+            Adds a random-letter service to the svchost "netsvcs" group; Parameters\ServiceDll
+            (0x9099, 0x8F81, 0x927B).
+ T1569.002  System Services: Service Execution .............................. Medium capa
+            Runs as a service inside svchost.exe (capa tag of the same rule).
+ T1070.006  Indicator Removal: Timestomp .................................... High   capa
+            File times of the installed DLL are copied from kernel32.dll (0x8054).
+ T1562.004  Impair Defenses: Disable or Modify System Firewall .............. High   capa
+            Opens the HTTP port ("WWW" entry) through the firewall COM interface (0x6B73).
+ T1562.001  Impair Defenses: Disable or Modify Tools ........................ Medium capa
+            Stops the SharedAccess (firewall / ICS) service (0x7F99). capa tags the stop T1489.
+ T1490      Inhibit System Recovery ......................................... High
+            ResetSR from srclient.dll (0x8F2C).
+ T1055.001  Process Injection: Dynamic-link Library Injection ............... Medium capa
+            services.exe: OpenProcess, VirtualAllocEx, WriteProcessMemory, CreateRemoteThread on
+            LoadLibraryA; runs on Windows 2000 only (0x7B75, 0x7CA0). capa tags the same function
+            T1055, T1055.003 and T1620.
+ T1057      Process Discovery ............................................... High   capa
+            Process32First/Next walk to find the target process (0x7C20).
+ T1012      Query Registry .................................................. Medium capa
+            State dword and svchost group values (0x7D25, 0x8F81).
+ T1082      System Information Discovery .................................... High   capa
+            OS version, computer name, system-volume serial number (0x6847, 0x6A3A, 0x7D84).
+ T1083      File and Directory Discovery .................................... Low    capa
+            File size, common paths, version resource of ntdll.dll (0x8119, 0x7D84, 0xC5AF).
+ T1016      System Network Configuration Discovery .......................... Medium capa
+            Local IPv4 addresses and socket information (0xBD83, 0x115F5).
+ T1016.001  Internet Connection Discovery ................................... High   capa
+            WinINet reachability checks and public-IP lookups (0x6A16, 0x728D, 0x86BC).
+ T1614.001  System Location Discovery: System Language Discovery ............ High   capa
+            Keyboard-layout list (0x67C0); OS language from ntdll.dll (0xC5AF); per-target
+            language estimate (0xC747).
+ T1480      Execution Guardrails ............................................ High
+            Returns early and does nothing when any installed keyboard layout is Ukrainian
+            (0x67C0); the GeoIP country "UA" is excluded as a target (0xC747).
+ T1124      System Time Discovery ........................................... Medium
+            Today's date is taken from the HTTP "Date" header of six public sites (0x9460).
+ T1071.001  Application Layer Protocol: Web Protocols ....................... High   capa
+            WinINet and raw-socket HTTP clients (0x8471, 0x9460, 0x115F5).
+ T1105      Ingress Tool Transfer ........................................... High   capa
+            Signed payload download, temp file, WinExec (0x9427, 0x9312); GeoIP database
+            download (0xC693).
+ T1027      Obfuscated Files or Information ................................. Low
+            Single-byte XOR (0xC4) over part of the self-URL buffer (0x7364). capa's RC4 label
+            for that function is a false positive.
+
+ [Indicated - stage 3]   (strings, imports and function level; internals not documented)
+ T1210      Exploitation of Remote Services ................................. High
+            srvsvc/browser pipes, ncacn_np, NetpwPathCanonicalize (MS08-067 class); attack
+            routine 0x78CC.
+ T1021.002  Remote Services: SMB/Windows Admin Shares ....................... Medium
+            \\%s\IPC$, WNetAddConnection2A.
+ T1046      Network Service Discovery ....................................... Medium
+ T1018      Remote System Discovery ......................................... Medium
+            Dotted-quad formats, Winsock set; address generation filtered by GeoIP [PUB].
+ T1568.002  Dynamic Resolution: Domain Generation Algorithms ................ High
+            250 names per round, 5 TLDs, date taken from the web (code-verified gates); the
+            algorithm itself is not documented here; 250 domains/day documented for A [PUB].
+ T1001.003  Data Obfuscation: Protocol or Service Impersonation ............. Low-Medium
+            Payload served as "Content-Type: image/jpeg" (HTTP server code, flow document 3.6).
+ (no clean ID) UPnP port mapping to make the local HTTP server reachable.
+
+
+================================================================================================
+11. INDICATORS OF COMPROMISE
+================================================================================================
+Network / host indicators below come from stage-3 strings and, where marked [CODE], from the code
+(section 9.2). None were observed at run time: nothing was executed, so they are indicated, not
+observed.
+
+11.1 File hashes - see section 4 (sample, parts, derived layers).
+     Sample SHA-256   d7d501e0aaeef3b9ed324d423b0309831f42dd8ab10e28a01f1238bddb5155d1
+     Sample MD5       0296ab9d97f11d941ccbbf06ac79c08f
+     Imphash          4f201eef2d206043c7ff1dea4fc0b4bf
+     Stage 3 buffer   sha256 b4b4e5da222e9f9f3c053ee4b5562d82c235b982a598138693dfb8b685ce5122
+
+11.2 Network
+     URLs (block / alert):
+       http://trafficconverter.biz/4vir/antispyware/loadadv.exe
+       http://trafficconverter.biz
+       http://www.getmyip.org
+       http://getmyip.co.uk
+       http://checkip.dyndns.org
+       http://www.maxmind.com/download/geoip/database/GeoIP.dat.gz  (legitimate site; alert on
+                                                    a non-browser process fetching GeoIP.dat.gz)
+     Hostnames: trafficconverter.biz, getmyip.org, getmyip.co.uk, checkip.dyndns.org
+     Benign sites used for date lookup (do NOT block; correlate only): w3.org, ask.com, msn.com,
+       yahoo.com, google.com, baidu.com
+     DGA: date-seeded names under .biz .info .org .net .com (about 250/day documented for
+       variant A [PUB]). The algorithm was not reproduced here, so no domain list is given.
+     Protocol patterns:
+       - Peer payload fetch   http://<ipv4>:<random high port>/<path>
+       - Local HTTP server    "HTTP/1.0 200 OK" + "Content-Type: image/jpeg" + "Pragma: no-cache"
+                              with a body that is not a JPEG, on a random high TCP port
+       - SSDP                 UDP 239.255.255.250:1900  M-SEARCH, ST: urn:schemas-upnp-org:device:
+                              InternetGatewayDevice:1 / upnp:rootdevice
+       - UPnP SOAP            POST ... SOAPAction ...AddPortMapping, "User-Agent: POSIX, UPnP/1.0"
+       - SMB                  NetBIOS session to name *SMBSERVER, IPC$ tree connect, named pipes
+                              \pipe\srvsvc and \pipe\browser, RPC over ncacn_np
+
+11.3 Host
+     Mutex            Global\<CRC32 of the computer name, decimal>-7   (format string Global\%u-%u) [CODE]
+     Registry         HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SvcHost  (netsvcs value
+                        is extended with the new service name)
+                      HKLM\SYSTEM\CurrentControlSet\Services\<5-9 random letters> with values
+                        DisplayName (empty), Type 0x20, Start 2, ErrorControl 0, ImagePath
+                        "%SystemRoot%\system32\svchost.exe -k netsvcs", ObjectName LocalSystem,
+                        and subkey Parameters\ServiceDll
+                      HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Nls  default value, REG_DWORD,
+                        a persisted counter read at start and written back by the worm [CODE]
+                      HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\
+                        <profile>\GloballyOpenPorts\List  entry named "WWW" for the HTTP port [INF]
+     Command line    %SystemRoot%\system32\svchost.exe -k netsvcs
+     Files / modules  runtime-named ServiceDll (system32\<5-8 random letters>.dll, file times copied
+                      from kernel32.dll, file locked while the worm runs); temp files named 0XXXX.tmp
+                      in the system directory or %TEMP% (GetTempFileName prefix "0") that hold
+                      downloaded payloads before WinExec; 8.3-style random-named geo-database file;
+                      GeoIP.dat.gz; srclient.dll (ResetSR); netapi32.dll (NetpwPathCanonicalize)
+     Processes        svchost.exe (host of the service); services.exe (string; probable
+                      injection / patch target)
+     Services         SharedAccess (target of ControlService; string only)
+     Named pipes     \pipe\srvsvc, \pipe\browser
+     Name templates   n%08x%08x%08x, w%08x%08x%08x, l%08x%08x%08x, %08x%08x (use not determined)
+
+11.4 Static artefacts of stage 1 (for hunting / hash-independent matching)
+     TimeDateStamp 0x39DF5AFB; linker 7.0; EP RVA 0x434B; SizeOfImage 0x15000; 4 sections;
+     .data raw size 0xE000, entropy 7.48; imports 42 from KERNEL32/ADVAPI32/MSVCRT/USER32;
+     decoy set LocalFlags + GlobalFlags + IsValidSecurityDescriptor + _CIsinh/_CIcosh/_CItanh;
+     keystream constants 0x0A0A0082, 0xC41972EB, 0x86E61B46, XOR 0xDC, array base .data+0x88;
+     first array bytes 3F 58 27 49 41 58 27 49 3F 58 27 49 41 58 27 49 ...;
+     UPX header bytes of 7.2 (stage 2).
+
+11.5 Embedded payload-verification key (stage 3; anchor for unpacked files and memory)   [CODE]
+     RSA public exponent 0xC351 (50001); 128-byte modulus, sha256
+     f6ac601b37bae4263dc047310d8baf5e6c01495ea4fe9a34129b966a472c57c3 (bytes as stored).
+     Layout at RVA 0x152D8 of the stage-3 image (exponent, 4 zero bytes, then the modulus):
+        51 C3 00 00 00 00 00 00  CF F0 7B 61 89 D7 16 E8 1B 09 ED 31 45 FE 2E E7 ...
+     Scheme: every downloaded payload carries a 128-byte RSA signature block at its end:
+        00 01 FF*86 | RC4 key (20 bytes) | SHA-1 of the ENCRYPTED payload (20 bytes)
+     and the RC4 key must equal the SHA-1 of the decrypted payload. Only the holder of the private key
+     can produce a payload that the worm will run (flow document 3.10).
+
+
+================================================================================================
+12. DETECTION OPPORTUNITIES
+================================================================================================
+12.1 File / PE heuristics (stage 1)
+  - 32-bit DLL with 4 sections, no exports, no resources and an import table of only
+    KERNEL32 / ADVAPI32 / MSVCRT / USER32 that mixes VirtualAlloc + VirtualProtect + LoadLibraryA +
+    GetProcAddress with unrelated ctype / math / security APIs (IsCharAlphaNumericA, _CIsinh,
+    LocalFlags, IsValidSid ...). Imphash 4f201eef2d206043c7ff1dea4fc0b4bf.
+  - .data raw size >= 0x8000, entropy > 7.0, in a DLL whose .text is < 0x4000 bytes.
+  - e_lfanew = 0xD8 with an all-zero 0x7E..0xD7 gap (Rich header removed), import descriptors with
+    OriginalFirstThunk = 0, pre-2001 TimeDateStamp together with a linker version >= 7.0.
+  - HTML text ("<!DOCTYPE html") appended at the end of the last section.
+12.2 YARA (section 13): stage-1 structural rule, stage-1 exact-build marker, stage-2 UPX container
+     (memory dumps), stage-3 strings and stage-3 payload-key anchor (memory / unpacked scans of
+     svchost.exe, services.exe).
+12.3 Memory
+  - Anonymous private regions holding a PE-like image whose MZ / "PE" signatures are corrupted but
+    whose optional header is intact, with section names UPX0/UPX1/UPX2 (rule Stage2).
+  - Plaintext stage-3 strings inside svchost.exe or services.exe (rule Stage3).
+  - The 24-byte RSA-key anchor of 11.5 (rule Stage3_Payload_Signature_Key): exponent 0xC351 followed by
+    the start of the modulus; very specific, so a hit is strong evidence.
+12.4 Host telemetry (Sysmon-style)
+  - Service creation / SvcHost netsvcs value change; ServiceDll pointing at a runtime-named DLL
+    in system32; service with an empty DisplayName [PUB]; svchost.exe -k netsvcs loading an unknown
+    DLL (events 1, 7, 12/13).
+  - CreateRemoteThread into services.exe (event 8); named pipes srvsvc / browser created or
+    connected by an unexpected process (events 17/18).
+  - Mutex "Global\<n>-<n>" creation by svchost.exe.
+12.5 Network telemetry
+  - DNS: bursts of NXDOMAIN for random-looking names under .biz/.info/.org/.net/.com from one
+    host (variant A: about 250 per day); lookups of trafficconverter.biz (the code retries every
+    ~5 s, but the resolver's negative cache makes the wire cadence about one query per cache
+    lifetime, ~5 min as SRI observed - see the flow document, section 3.9). A host with no
+    connection spins in that thread (no Sleep), so it can show high svchost CPU while offline.
+  - HTTP from svchost.exe / non-browser processes to getmyip.org, getmyip.co.uk, checkip.dyndns.org,
+    and to the six date-lookup sites followed by DGA lookups.
+  - SMB: NetBIOS session to *SMBSERVER, IPC$ connect and RPC binds on srvsvc / browser followed by
+    an oversized path-canonicalisation call (MS08-067 IDS signatures exist and apply).
+  - A workstation listening on a random high TCP port and answering with Content-Type image/jpeg
+    and a non-JPEG body; SSDP M-SEARCH plus UPnP AddPortMapping from a workstation.
+12.6 Hardening notes
+  - Ensure MS08-067 (KB958644) is installed; restrict SMB (TCP 139/445) between hosts; disable
+    AutoRun / AutoPlay; monitor for services whose ServiceDll lives outside expected paths.
+
+
+================================================================================================
+13. YARA RULES (validated)
+================================================================================================
+Validation (YARA 4.3.2, run against the sample and against the decoded layers):
+  - Original sample : Kido_Stage1_Obfuscated_Crypter_DLL and
+                      Kido_Stage1_Encoded_Image_Marker_ExactBuild match. The stage-2 and stage-3
+                      rules do not match it (those layers are hidden).
+  - Stage 2 decoded (signatures erased, and restored) : Kido_Stage2_UPX_Container_Dump matches.
+  - Stage 3 decompressed buffer : Kido_Conficker_Stage3_Unpacked_Strings and
+    Kido_Conficker_Stage3_Payload_Signature_Key (RSA key anchor, 11.5) match.
+  - False-positive sweep, 0 hits for all five rules: C:\Windows\System32, C:\Windows\SysWOW64,
+    C:\Windows\Microsoft.NET, Python 3.12 (whole tree), TDM-GCC bin, Sysinternals Suite; the first
+    four rules were also swept over C:\Program Files (0 hits).
+  The Stage1 rule generalises to siblings by structure; the ExactBuild rule is sample-specific
+  (keystream parameters are probably per-build).
+
+import "pe"
+import "math"
+
+rule Kido_Stage1_Obfuscated_Crypter_DLL
+{
+    meta:
+        description = "Stage-1 obfuscated reflective-loader DLL that hides a UPX-packed Conficker/Kido DLL in an encoded .data blob"
+        author      = "static analysis of kido.sample"
+        sha256      = "d7d501e0aaeef3b9ed324d423b0309831f42dd8ab10e28a01f1238bddb5155d1"
+        confidence  = "high for this build, medium for siblings"
+        scope       = "file at rest"
+
+    strings:
+        // DllMain frame: push ebp; mov ebp,esp; and esp,-8; sub esp,3FCh; push ebx/esi/edi; mov [esp+38h],imm
+        $dllmain_frame = { 55 8B EC 83 E4 F8 81 EC FC 03 00 00 53 56 57 C7 44 24 38 }
+        // mov dword ptr [esp+0Ch], 0FFFFFFFCh  (dword-alignment mask used by every inlined array accessor)
+        $mask_init     = { C7 44 24 0C FC FF FF FF }
+        // entry-point hand-off: add eax,ecx; call eax; pop edi; pop esi; pop ebx; mov esp,ebp; pop ebp; ret 0Ch
+        $ep_call       = { 03 C1 FF D0 5F 5E 5B 8B E5 5D C2 0C 00 }
+        // inlined accessor operations: or reg,0x0A0A0082  /  xor reg,0xDC
+        $acc_or        = { ( 81 ( C9 | CA | CB | CE | CF ) | 0D ) 82 00 0A 0A }
+        $acc_xor       = { ( 81 ( F1 | F2 | F3 | F6 | F7 ) | 35 ) DC 00 00 00 }
+        // decoy import names
+        $decoy1 = "LocalFlags" ascii
+        $decoy2 = "GlobalFlags" ascii
+        $decoy3 = "IsValidSecurityDescriptor" ascii
+        $decoy4 = "_CIsinh" ascii
+        $decoy5 = "_CIcosh" ascii
+        $decoy6 = "_CItanh" ascii
+        $decoy7 = "IsCharAlphaNumericA" ascii
+
+    condition:
+        uint16(0) == 0x5A4D and
+        pe.is_dll() and pe.machine == pe.MACHINE_I386 and
+        pe.number_of_sections == 4 and pe.number_of_exports == 0 and pe.number_of_resources == 0 and
+        ( for any s in pe.sections : ( s.name == ".data" and s.raw_data_size > 0x8000 and
+                                       math.entropy(s.raw_data_offset, s.raw_data_size) > 7.0 ) ) and
+        ( ( $ep_call and $mask_init ) or ( #acc_or > 20 and #acc_xor > 20 ) ) and
+        ( $dllmain_frame or 4 of ($decoy*) )
+}
+
+rule Kido_Stage1_Encoded_Image_Marker_ExactBuild
+{
+    meta:
+        description = "Keystream-of-zeroes run that starts the encoded stage-2 array at .data+0x88 (exact for this build's constants)"
+        author      = "static analysis of kido.sample"
+        scope       = "file at rest; sample-specific hunting rule"
+
+    strings:
+        $enc = { 3F 58 27 49 41 58 27 49 3F 58 27 49 41 58 27 49 47 58 27 49 49 58 27 49 47 58 27 49 49 58 27 49
+                 4F 58 27 49 51 58 27 49 4F 58 27 49 51 58 27 49 57 58 27 49 59 58 27 49 57 58 27 49 59 58 27 49 }
+
+    condition:
+        uint16(0) == 0x5A4D and $enc in (0x6000..0x6400)
+}
+
+rule Kido_Stage2_UPX_Container_Dump
+{
+    meta:
+        description = "Decoded stage-2: UPX-packed (NRV2B-LE32, v13) Conficker/Kido DLL as it appears after the stage-1 decode / in a memory dump"
+        author      = "static analysis of kido.sample"
+        scope       = "memory / dumped stage 2 (MZ and PE signatures are erased in this form, so no MZ check)"
+
+    strings:
+        // 'UPX!' pack header: ver 13, fmt 9 (win32/pe), method 2 (NRV2B-LE32), level 9, u_adler, c_adler, u_len, c_len, u_file_size, filter 26h/cto 06h
+        $upxhdr = { 55 50 58 21 0D 09 02 09 4C 4D C7 51 B7 6D 44 D8 0F 8F 01 00 F6 9A 00 00 00 4C 01 00 26 06 00 D8 }
+        // first bytes of the compressed stream (literal run containing ".dll" and "\Global\%u-%u")
+        $stream = { F7 21 A2 90 00 2E 64 6C 6C 13 FF E7 FF CD 5C 47 6C 6F 62 61 6C 5C 25 75 2D 25 75 }
+        $s0 = "UPX0" ascii
+        $s1 = "UPX1" ascii
+        $s2 = "UPX2" ascii
+        $i1 = "URLDownloadToFileA" ascii
+        $i2 = "WNetAddConnection2A" ascii
+        $i3 = "GetKeyboardLayoutList" ascii
+        $i4 = "NdrClientCall2" ascii
+
+    condition:
+        $upxhdr or ( $stream and all of ($s*) ) or ( all of ($s*) and 3 of ($i*) )
+}
+
+rule Kido_Conficker_Stage3_Unpacked_Strings
+{
+    meta:
+        description = "Plaintext strings of the unpacked Conficker/Kido worm DLL (memory scanning or unpacked dumps)"
+        author      = "static analysis of kido.sample"
+        scope       = "memory / unpacked payload"
+
+    strings:
+        $a1  = "Global\\%u-%u" ascii
+        $a2  = "trafficconverter.biz" ascii
+        $a3  = "loadadv.exe" ascii
+        $a4  = "getmyip.org" ascii
+        $a5  = "getmyip.co.uk" ascii
+        $a6  = "checkip.dyndns.org" ascii
+        $a7  = "NetpwPathCanonicalize" ascii
+        $a8  = "\\pipe\\srvsvc" ascii
+        $a9  = "GeoIP.dat.gz" ascii
+        $a10 = "Content-Type: image/jpeg" ascii
+        $a11 = "AddPortMapping" ascii
+        $a12 = "ResetSR" ascii
+        $a13 = "srclient.dll" ascii
+        $a14 = "ncacn_np" ascii
+        $a15 = "WANIPConnection" ascii
+        $a16 = "ssdp:discover" ascii
+        $a17 = "http://%d.%d.%d.%d:%d/%s" ascii
+        $w1  = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SvcHost" wide
+        $w2  = "%SystemRoot%\\system32\\svchost.exe -k " wide
+        $w3  = "netsvcs" wide
+
+    condition:
+        ( $a2 and $a3 ) or ( 8 of ($a*) and 1 of ($w*) )
+}
+
+rule Kido_Conficker_Stage3_Payload_Signature_Key
+{
+    meta:
+        description = "RSA-1024 public key (exponent 0xC351) the worm uses to verify downloaded payloads; present in unpacked / dumped stage 3"
+        author      = "static analysis of kido.sample"
+        scope       = "memory / unpacked payload (not visible in the packed file at rest)"
+
+    strings:
+        // exponent dword 0xC351, 4 zero bytes, then the first 16 bytes of the 128-byte modulus
+        $key = { 51 C3 00 00 00 00 00 00 CF F0 7B 61 89 D7 16 E8 1B 09 ED 31 45 FE 2E E7 }
+
+    condition:
+        $key
+}
+
+
+================================================================================================
+14. CONFIDENCE, LIMITATIONS, STATIC FOLLOW-UPS
+================================================================================================
+Confidence
+  HIGH    The file is malicious; it is a three-layer wrapper; layers 2 and 3 are exact (two UPX
+          checksums verified); packed / encrypted / obfuscated status; no anti-debug in stage 1;
+          the worm behaviours read at instruction level (guards, hot-patch, installation, service
+          registration, HTTP server, geo filter, downloader, payload-signature gate, timers),
+          independently corroborated by capa 9.2.1 at function level (70 rules, every hit
+          reconciled, section 9.1); stage-1 base relocation.
+  MEDIUM  Conficker variant A attribution (strings and code vs public reporting, no hash comparison);
+          the propagation, rendezvous and UPnP components (function-level evidence only);
+          the DNS negative-cache explanation of SRI's 5-minute figure (inference).
+  LOW     The origin of the 7,424-byte block and of the HTML trailer: both are characterised (dead
+          data, uniformly random / generic HTML) but not explained.
+
+Limitations
+  - Static only: nothing was run, so no behavioural or network observation backs any statement.
+    The analysis VM was used for static tools only (capa, DiE) and the sample was never executed.
+  - Stage 3 was rebuilt and disassembled, but only part of it was read at instruction level; the
+    exploitation, payload-delivery and host-name-generation internals were deliberately not
+    documented (flow document, scope note).
+  - capa finds nothing in the file as received and under-reports stage 3: no rule covers the RSA
+    code, the domain generation, UPnP / SSDP or the SMB / RPC client (9.1). Two of its hits (RC4
+    PRGA) are false positives. FLOSS was intentionally not run (its decoding stage emulates code).
+  - The public-reporting cross-check was read second-hand through a web-fetch helper (primary
+    USENIX URL unreachable); SRI's statements were not re-verified against the primary PDF.
+  - Per-build parameters of the stage-1 encoder mean sibling samples will need their constants
+    re-derived; the Stage1 YARA rule is structure-based for that reason.
+  - kido.zip was skipped at the user's request (the user states it is the same sample).
+
+Suggested static follow-ups
+  1. Compare this build with other builds of the same wrapper (7,424-byte block, HTML trailer,
+     keystream constants): differences would confirm that they are per-build junk / parameters.
+  2. Look the hashes up (sample, PE-image portion, imphash, derived layers, RSA modulus hash) and
+     compare stage 3 with reference Conficker.A samples.
+  3. Use the rebuilt stage-3 PE (9.1; sha256 19f2274c...b07d49, file offset == RVA, so it lines up
+     with every RVA in the flow document) in a disassembler to read the parts that were only
+     summarised: propagation, name generation, UPnP. It is a live worm DLL: keep it non-executable.
+     A copy remains in the session scratch folder only; it can be rebuilt from the sample (Appendix A
+     recipe plus the PE-building step of 9.1) and a non-executable copy can be saved into the project
+     folder on request. The copies on the analysis VM were deleted.
+  4. Optional dynamic confirmation (NOT done): the DNS negative-cache cadence of the downloader
+     (flow document 3.9), the offline CPU spin, and the runtime artefacts (service key, dropped DLL
+     name, mutex, HTTP port). The analysis VM as configured is bridged to the home LAN and the
+     router. The worm probes private ranges and asks UPnP gateways for port mappings, and a
+     snapshot revert cannot undo changes made outside the VM (a router port mapping, packets that
+     reached other hosts). FakeNet-NG 3.5 on the VM, with its default.ini, does not divert TCP 139
+     or UDP 67/68/137/138/443/1900/5355 (NetBIOS session service, NetBIOS name / datagram service,
+     SSDP), so those probes would still reach the LAN. A host-only network should come first; with
+     FakeNet-NG alone, use a copy of the config with that blacklist emptied and confirm with a
+     capture taken outside the VM.
+
+
+================================================================================================
+15. REFERENCES
+================================================================================================
+  [1] P. Porras, H. Saidi, V. Yegneswaran (SRI International), "A Foray into Conficker's Logic and
+      Rendezvous Points", USENIX LEET '09 (HTML mirror; title and venue per the public record and
+      the URL path - the mirrored page text itself does not name the venue):
+      https://static.usenix.org/events/leet09/tech/full_papers/porras/porras_html/
+  [2] SRI International, "An Analysis of Conficker's Logic and Rendezvous Points" (tech report,
+      release date 4 Feb 2009, last update 19 Mar 2009):
+      https://www.csl.sri.com/users/vinod/papers/Conficker
+  [3] UPX pack-header and NRV2B-LE32 / UCL decompression as documented in the UPX / UCL sources.
+  [4] PEiD-format signature database distributed with ExeinfoPE (4,462 entries, 2024-11-11).
+
+
+================================================================================================
+APPENDIX A - DECODE / UNPACK RECIPE (for reproduction; data transforms only)
+================================================================================================
+  # Stage 1 -> stage 2
+  u32(off)  = little-endian dword of kido.sample at file offset off
+  BASE = 0x6088            C1 = u32(0x6068) = 0xC41972EB      C2 = u32(0x603C) = 0x86E61B46
+  K    = 0x0A0A0082
+  t              = (((a >> 2) | K) << 1) & 0xFFFFFFFF          # a = logical byte address, multiple of 4
+  key(a)         = ((t ^ C1) - C2) & 0xFFFFFFFF
+  plain_dword(a) = u32(BASE + (a ^ 0xDC)) ^ key(a)            # a = 0, 4, 8 ... 0xA5FC
+  stage2 = concatenation of plain_dword(a) little-endian for a in range(0, 0xA600, 4)
+  (optional) stage2[0:2] = "MZ";  stage2[0x108:0x10C] = "PE\0\0"
+
+  # Stage 2 -> stage 3
+  pack header at stage2[0x3E0:0x400]; compressed stream = stage2[0x400 : 0x400 + 0x9AF6]
+  check adler32(compressed) == 0xD8446DB7
+  stage3 = NRV2B-LE32 decompress (UCL / UPX stub algorithm)   -> 102,159 bytes
+  check adler32(stage3) == 0x51C74D4C   (this is the UPX-internal, still filtered form)
+
+
+================================================================================================
+APPENDIX B - RECOVERED STAGE-3 IMPORT LIST (169 imports, 12 DLLs)  [STR]
+================================================================================================
+  KERNEL32.DLL (60): WriteFile, WaitForMultipleObjects, TerminateThread, GetSystemTime,
+    SystemTimeToFileTime, GetTempFileNameA, GetTempPathA, WinExec, MultiByteToWideChar,
+    FreeLibrary, OpenEventA, SetEvent, InterlockedExchange, CreateEventA, InterlockedIncrement,
+    InterlockedDecrement, WaitForSingleObject, DeleteFileA, ReadFile, HeapFree, GetProcessHeap,
+    HeapAlloc, GetFileTime, SetFileTime, GetCurrentThreadId, GetCurrentProcessId,
+    QueryPerformanceCounter, GetTickCount, GetVolumeInformationA, CreateToolhelp32Snapshot,
+    Process32First, Process32Next, OpenProcess, VirtualAllocEx, GlobalFree, GlobalAlloc, Sleep,
+    LockFile, GetFileSize, CreateFileA, MoveFileExA, CopyFileA, MoveFileA, GetSystemDirectoryA,
+    GetVersion, CloseHandle, CreateThread, GetLastError, CreateMutexA, GetComputerNameA,
+    GetModuleFileNameA, DisableThreadLibraryCalls, VirtualProtect, VirtualFree, VirtualAlloc,
+    GetProcAddress, LoadLibraryA, CreateRemoteThread, WriteProcessMemory, GetModuleHandleA
+  ADVAPI32.dll (12): CloseServiceHandle, RegCreateKeyExW, RegOpenKeyExW, RegQueryValueExW,
+    RegSetValueExW, OpenSCManagerA, OpenServiceA, RegCloseKey, ControlService, RegQueryValueExA,
+    RegOpenKeyExA, RegSetValueExA
+  MPR.dll (2): WNetAddConnection2A, WNetCancelConnection2A
+  MSVCRT.dll (47): _adjust_fdiv, _initterm, calloc, sscanf, strchr, realloc, _fdopen, fprintf,
+    ftell, strcpy, _stricmp, _errno, fseek, fread, strcmp, fopen, fclose, fwrite, memcmp, strcat,
+    sin, log, strtok, atoi, _strnicmp, wcscpy, wcscat, _fileno, _fstat, srand, wcsstr, wcslen,
+    memset, memcpy, malloc, _strlwr, strstr, _except_handler3, _strdup, free, _snprintf, rand,
+    strncat, strncpy, strlen, abs, _memicmp
+  ole32.dll (3): CoUninitialize, CoCreateInstance, CoInitializeEx
+  OLEAUT32.dll (3, by ordinal): SysAllocString (#2), SysStringLen (#7), SysFreeString (#6)
+  RPCRT4.dll (4): NdrClientCall2, RpcStringBindingComposeA, RpcBindingFromStringBindingA,
+    RpcBindingFree
+  urlmon.dll (2): ObtainUserAgentString, URLDownloadToFileA
+  USER32.dll (1): GetKeyboardLayoutList
+  VERSION.dll (3): VerQueryValueA, GetFileVersionInfoA, GetFileVersionInfoSizeA
+  WININET.dll (6): InternetOpenA, HttpQueryInfoA, InternetReadFile, InternetCloseHandle,
+    InternetGetConnectedState, InternetOpenUrlA
+  WS2_32.dll (26; 25 by ordinal, names from the standard ws2_32 ordinal table): select (#18),
+    __WSAFDIsSet (#151), ioctlsocket (#10), recv (#16), setsockopt (#21), sendto (#20),
+    listen (#13), accept (#1), bind (#2), send (#19), getsockname (#6), shutdown (#22),
+    gethostbyname (#52), htonl (#8), closesocket (#3), inet_ntoa (#12), gethostname (#57),
+    WSAStartup (#115), htons (#9), connect (#4), WSAGetLastError (#111), WSASetLastError (#112),
+    ntohl (#14), socket (#23), inet_addr (#11), WSAIoctl (by name)
+
+================================ END OF REPORT ================================================
+

